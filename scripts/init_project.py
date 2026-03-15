@@ -33,6 +33,7 @@ CORE_FILES = [
     "base_model.go",
     "query_builder.go",
     "transaction.go",
+    "auto_id.go",       # 雪花算法 ID 生成（依赖 github.com/bwmarrin/snowflake）
 ]
 
 # 可选示例文件（--example 时复制）

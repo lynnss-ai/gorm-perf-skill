@@ -152,7 +152,7 @@ def check_per_line(lines: List[str]) -> List[Issue]:
                         "事务块内使用全局 db 而非 tx，该操作不在事务内！"
                         "改用 tx.Create(...) / tx.Find(...)"))
 
-        # ── R18a: foreignKey tag 未加 constraint:false ───────────────────────
+        # ── R18a: foreignKey tag 未加 constraint:false（逐行检测）────────────
         if re.search(r'gorm:"[^"]*foreignKey:', s, re.IGNORECASE):
             if "constraint:false" not in s.lower():
                 issues.append(Issue("ERROR", "PHYSICAL_FOREIGN_KEY", i, s,
@@ -223,7 +223,7 @@ def check_full_file(code: str) -> List[Issue]:
             "生产环境必须设置 SetMaxOpenConns / SetMaxIdleConns / SetConnMaxLifetime，"
             "否则默认无上限可能耗尽 DB 连接"))
 
-    # ── R18b: AutoMigrate 未禁用物理 FK ──────────────────────────────────────
+    # ── R18b: AutoMigrate 未禁用物理 FK（全文件检测）────────────────────────
     if has_open and "DisableForeignKeyConstraintWhenMigrating" not in code:
         issues.append(Issue("WARN", "FK_MIGRATION_NOT_DISABLED", 0, "gorm.Config{}",
             "建议设置 DisableForeignKeyConstraintWhenMigrating: true，"

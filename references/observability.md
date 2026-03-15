@@ -197,7 +197,7 @@ db.Use(otelgorm.NewPlugin(
     ),
 ))
 
-// 使用时必须传入携带 trace context 的 ctx
+// 使用时需传入携带 trace context 的 ctx
 ctx, span := tracer.Start(ctx, "create-order")
 defer span.End()
 db.WithContext(ctx).Create(&order) // 自动生成子 span

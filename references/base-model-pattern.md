@@ -143,7 +143,7 @@ m.GetTxDB(ctx).Where("id = ?", id).Take(&v)
 
 ---
 
-## 5. ListAll() 必须加软上限
+## 5. ListAll() 建议加软上限
 
 ### 问题
 
@@ -245,11 +245,11 @@ page2, _ := model.PageAfter(ctx, lastID, 20, "status=?", nil, 1)
 ## 8. 多租户隔离在 Model 层强制
 
 ```go
-// ❌ 通用方法不知道租户概念，调用方必须手动带 tenant_id=? 条件
+// ❌ 通用方法不知道租户概念，调用方需手动带 tenant_id=? 条件
 // 容易漏写导致数据越权
 orders, _ := model.List(ctx, "order_status=?", nil, 1) // 漏了 tenant_id！
 
-// ✅ 在具体 Model 覆写，强制注入 tenant_id
+// ✅ 在具体 Model 覆写，注入 tenant_id
 func (m *defaultOrderModel) ListByTenant(ctx context.Context,
     tenantID string, query string,
     orders []dbcore.Order, args ...interface{}) ([]*Order, error) {

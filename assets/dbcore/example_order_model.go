@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package example
 
 // ============================================================
@@ -15,7 +18,9 @@ import (
 	"errors"
 	"time"
 
-	"your-module/internal/dbcore" // 替换为实际 import 路径
+	// 将下面的路径替换为实际模块路径，例如：
+	// "github.com/your-org/your-app/internal/dbcore"
+	dbcore "your-module/internal/dbcore"
 
 	"gorm.io/datatypes"
 	"gorm.io/gorm"

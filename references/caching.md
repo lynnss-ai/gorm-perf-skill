@@ -210,7 +210,7 @@ func (r *OrderRepo) CreateOrder(ctx context.Context, order *Order) error {
 
 ```go
 // 软删除后缓存可能仍返回"已删除"记录
-// 删除时必须同步清除缓存
+// 删除时需同步清除缓存
 func (r *UserRepo) SoftDeleteUser(ctx context.Context, id uint) error {
     if err := r.db.WithContext(ctx).Delete(&User{}, id).Error; err != nil {
         return err

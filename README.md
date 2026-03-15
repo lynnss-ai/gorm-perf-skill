@@ -56,7 +56,9 @@ assets/
 └── dbcore/
     ├── base_model.go             # 修复版 BaseModel 源文件
     ├── query_builder.go          # 修复版 QueryBuilder 源文件
-    └── transaction.go            # 事务管理器源文件
+    ├── transaction.go            # 事务管理器源文件
+    ├── auto_id.go                # 雪花算法 ID 生成（NEW v1.4.0）
+    └── example_order_model.go   # 完整 OrderModel 示例
 ```
 
 ## analyze_gorm.py 检测规则（R1–R18）

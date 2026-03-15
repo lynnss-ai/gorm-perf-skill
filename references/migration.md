@@ -67,7 +67,7 @@ func RunMigrations(dsn string) error {
 
 ## 3. 大表在线 DDL 规范（MySQL）
 
-> 大表（>500万行 或 >10GB）直接 ALTER TABLE 会锁表，生产必须用在线方案。
+> 大表（>500万行 或 >10GB）直接 ALTER TABLE 会锁表，生产建议使用在线方案。
 
 ### MySQL 8.0+ 原生在线 DDL
 
@@ -104,7 +104,7 @@ gh-ost \
 
 ## 4. 迁移 SQL 编写规范
 
-### 加列必须有默认值（避免锁表）
+### 加列建议设置默认值（避免锁表）
 
 ```sql
 -- ❌ 没有默认值，大表会全量更新每行
@@ -114,7 +114,7 @@ ALTER TABLE users ADD COLUMN age INT NOT NULL;
 ALTER TABLE users ADD COLUMN age INT NOT NULL DEFAULT 0, ALGORITHM=INSTANT;
 ```
 
-### down.sql 必须可独立执行
+### down.sql 应可独立执行
 
 ```sql
 -- 000003_add_orders_table.down.sql
@@ -156,6 +156,6 @@ migrate -path ./migrations -database "mysql://..." up
 # 回滚一步
 migrate -path ./migrations -database "mysql://..." down 1
 
-# 强制设置版本（慎用，跳过校验）
+# 设置版本（慎用，跳过校验）
 migrate -path ./migrations -database "mysql://..." force 5
 ```

@@ -162,7 +162,7 @@ func GetDB(ctx context.Context, db *gorm.DB) *gorm.DB {
     return db.Session(&gorm.Session{NewDB: true})
 }
 
-// Page 中 COUNT 和 Find 复用 baseDB 时，必须 Session 隔离
+// Page 中 COUNT 和 Find 复用 baseDB 时，应 Session 隔离
 baseDB := db.Where(query, args...)
 baseDB.Session(&gorm.Session{}).Count(&total)   // 独立 session
 baseDB.Session(&gorm.Session{}).Find(&list)     // 独立 session
