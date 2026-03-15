@@ -156,6 +156,95 @@ def analyze(code: str) -> List[Issue]:
                     ))
                     break
 
+    # ── R11: 缺少 PrepareStmt 配置 ──────────────────────────────────────────
+    full_code = code
+    if "gorm.Open(" in full_code and "PrepareStmt" not in full_code:
+        issues.append(Issue(
+            level="INFO", rule="MISSING_PREPARE_STMT",
+            line=0, snippet="gorm.Open(...)",
+            suggestion="建议在 gorm.Config{} 中开启 PrepareStmt: true，SQL 编译结果可复用，高并发场景提升明显"
+        ))
+
+    # ── R12: 未使用 SkipDefaultTransaction ──────────────────────────────────
+    if "gorm.Open(" in full_code and "SkipDefaultTransaction" not in full_code:
+        issues.append(Issue(
+            level="INFO", rule="MISSING_SKIP_DEFAULT_TX",
+            line=0, snippet="gorm.Open(...)",
+            suggestion="写操作不需要隐式事务时，设置 SkipDefaultTransaction: true 可提升写性能约 30%"
+        ))
+
+    # ── R13: 硬编码 SQL（Raw SQL 注入风险） ─────────────────────────────────
+    for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+        # Raw/Exec 中直接拼接字符串（+ 或 fmt.Sprintf）
+        if re.search(r'\.(Raw|Exec)\s*\(', stripped):
+            if re.search(r'["\']\s*\+\s*\w|fmt\.Sprintf', stripped):
+                issues.append(Issue(
+                    level="ERROR", rule="SQL_INJECTION_RISK",
+                    line=i, snippet=stripped,
+                    suggestion="Raw/Exec 中字符串拼接存在 SQL 注入风险。改用占位符: db.Raw(\"SELECT * FROM t WHERE id = ?\", id)"
+                ))
+
+    # ── R14: Pluck 误用（应该用 Select + Scan） ──────────────────────────────
+    for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if re.search(r'\.Pluck\s*\(\s*["\'].*["\'],\s*&\w+\)', stripped):
+            # 检查是否提取多列（Pluck 只支持单列）
+            if re.search(r'\.Pluck\s*\(\s*["\']\w+,\s*\w+', stripped):
+                issues.append(Issue(
+                    level="WARN", rule="PLUCK_MULTI_COLUMN",
+                    line=i, snippet=stripped,
+                    suggestion="Pluck 只支持单列提取。提取多列应改用 .Select(\"col1,col2\").Scan(&result)"
+                ))
+
+    # ── R15: 未设置连接池 ────────────────────────────────────────────────────
+    if "gorm.Open(" in full_code and "SetMaxOpenConns" not in full_code:
+        issues.append(Issue(
+            level="WARN", rule="MISSING_POOL_CONFIG",
+            line=0, snippet="sqlDB.SetMaxOpenConns(...)",
+            suggestion="未配置连接池。生产环境必须设置 SetMaxOpenConns / SetMaxIdleConns / SetConnMaxLifetime，"
+                       "否则默认无上限可能耗尽 DB 连接"
+        ))
+
+    # ── R16: 使用 DeletedAt 但未开启软删除提醒 ──────────────────────────────
+    if "DeletedAt" in full_code and "Unscoped()" not in full_code:
+        # 检查是否有直接 DELETE 操作（可能误以为是硬删除）
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if re.search(r'\.(Delete)\s*\(', stripped) and "Unscoped" not in stripped:
+                issues.append(Issue(
+                    level="INFO", rule="SOFT_DELETE_REMINDER",
+                    line=i, snippet=stripped,
+                    suggestion="Model 含 DeletedAt 字段，Delete 只设置时间戳（软删除），不会真正删除记录。"
+                               "如需硬删除请用 db.Unscoped().Delete(&model)"
+                ))
+                break
+
+    # ── R17: 事务内使用 db 而非 tx（事务不生效） ────────────────────────────
+    in_tx_block = False
+    tx_indent = 0
+    for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+        # 检测进入事务块
+        if re.search(r'db\.(Transaction|Begin)\(', stripped):
+            in_tx_block = True
+            tx_indent = len(line) - len(line.lstrip())
+            continue
+        if in_tx_block:
+            current_indent = len(line) - len(line.lstrip())
+            # 事务块结束（缩进回退到事务声明层级）
+            if stripped and current_indent <= tx_indent and re.search(r'^[})]', stripped):
+                in_tx_block = False
+                continue
+            # 在事务块内发现直接使用 db. 而非 tx.
+            if re.search(r'\bdb\.(Find|First|Create|Save|Update|Delete|Exec|Raw)\b', stripped):
+                issues.append(Issue(
+                    level="ERROR", rule="DB_IN_TX_BLOCK",
+                    line=i, snippet=stripped,
+                    suggestion="事务块内使用了全局 db 而非事务对象 tx，该操作不在事务内！改用 tx.Create(...) / tx.Find(...)"
+                ))
+                break
+
     # 去重（同 rule 只保留第一个）
     seen = set()
     deduped = []

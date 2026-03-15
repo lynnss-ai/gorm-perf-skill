@@ -1,6 +1,6 @@
 ---
 name: gorm-perf
-version: 1.0.1
+version: 1.0.2
 description: >
   GORM 使用与性能优化专项技能，覆盖以下场景：
   (1) GORM 代码审查、编写、调试；
@@ -12,8 +12,11 @@ description: >
   (7) CREATE TABLE SQL 转 GORM struct；
   (8) 数据库迁移（golang-migrate、AutoMigrate、ALTER TABLE）；
   (9) GORM 单元测试（sqlmock、SQLite 内存库）；
-  (10) Benchmark / pprof 性能分析代码生成。
-  适用于用户提到"写个查询"、"数据库好慢"、"怎么加索引"、"帮我写个 struct"等场景。
+  (10) Benchmark / pprof 性能分析代码生成；
+  (11) 分库分表（Sharding）配置与分片键设计；
+  (12) 监控与可观测性（Prometheus 指标、慢查询告警、OpenTelemetry 链路追踪）。
+  适用于用户提到"写个查询"、"数据库好慢"、"怎么加索引"、"帮我写个 struct"、
+  "分库分表怎么配"、"GORM 怎么接 Prometheus"、"链路追踪"等场景。
 ---
 
 # GORM 使用与性能优化 Skill
@@ -329,7 +332,90 @@ fmt.Println(stmt.Vars)         // 打印参数
 
 ---
 
-## 9. 进阶参考
+## 9. 分库分表（Sharding）
+
+> 详细配置见 `references/sharding.md`，以下为快速索引。
+
+```go
+import "gorm.io/sharding"
+
+db.Use(sharding.Register(sharding.Config{
+    ShardingKey:         "user_id",
+    NumberOfShards:      64,
+    PrimaryKeyGenerator: sharding.PKSnowflake,
+}, "orders")) // 对 orders 表分片
+
+// 查询自动路由到对应分片
+db.Where("user_id = ?", 100).Find(&orders)
+
+// 广播查询（跨分片，慎用）
+db.Where("status = ?", "pending").Find(&orders)
+```
+
+**分片键选择原则**：
+- 高基数字段（user_id / tenant_id），避免数据倾斜
+- 查询条件中出现频率最高的字段
+- 避免跨分片 JOIN 和聚合
+
+> 双写迁移、自定义分片算法、跨分片查询详见 `references/sharding.md`
+
+---
+
+## 10. 监控与可观测性
+
+> 详细配置见 `references/observability.md`，以下为快速索引。
+
+### 10.1 Prometheus 指标
+
+```go
+import "github.com/go-gorm/prometheus"
+
+db.Use(prometheus.New(prometheus.Config{
+    DBName:          "myapp",
+    RefreshInterval: 15,              // 每 15s 刷新指标
+    MetricsCollector: []prometheus.MetricsCollector{
+        &prometheus.MySQL{VariableNames: []string{"Threads_running"}},
+    },
+}))
+// 自动暴露: gorm_dbstats_max_open_connections, idle_connections, in_use 等
+```
+
+### 10.2 慢查询回调
+
+```go
+db.Callback().Query().After("gorm:query").Register("slowlog", func(db *gorm.DB) {
+    if db.Statement.SQL.String() != "" {
+        elapsed := db.Statement.DB.(*gorm.DB).Statement.BuildCondition
+        // 超过阈值则告警
+    }
+})
+
+// 更简洁：直接用自定义 Logger
+newLogger := logger.New(writer, logger.Config{
+    SlowThreshold: 200 * time.Millisecond,
+    LogLevel:      logger.Warn,
+})
+```
+
+### 10.3 OpenTelemetry 链路追踪
+
+```go
+import "github.com/uptrace/opentelemetry-go-extra/otelgorm"
+
+if err := db.Use(otelgorm.NewPlugin(
+    otelgorm.WithDBName("myapp"),
+)); err != nil {
+    panic(err)
+}
+// 每次 DB 操作自动产生 span，关联到父 trace
+db.WithContext(ctx).Find(&users) // ctx 需携带 trace context
+```
+
+> Grafana 仪表盘配置、连接池健康检查、告警规则详见 `references/observability.md`
+
+---
+
+## 11. 进阶参考
 
 详细专题见 `references/` 目录（按需加载，不要全量读入）：
 
@@ -341,3 +427,5 @@ fmt.Println(stmt.Vars)         // 打印参数
 | `references/concurrency.md` | 乐观锁、悲观锁、CAS 原子更新 | 用户问并发冲突、超卖、转账等场景 |
 | `references/testing.md` | sqlmock 单测、SQLite 集成测试、事务回滚隔离 | 用户问 GORM 代码怎么写单测 |
 | `references/migration.md` | golang-migrate 规范、大表在线 DDL | 用户问数据库迁移、AutoMigrate 的生产使用 |
+| `references/sharding.md` | 分库分表配置、分片算法、双写迁移 | 用户问分库分表、水平拆分 |
+| `references/observability.md` | Prometheus、OpenTelemetry、慢查询告警 | 用户问监控、可观测性、链路追踪 |
