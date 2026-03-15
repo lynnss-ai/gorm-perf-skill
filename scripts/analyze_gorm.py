@@ -159,6 +159,43 @@ def check_per_line(lines: List[str]) -> List[Issue]:
                     '禁止物理外键约束。改为: gorm:"foreignKey:UserID;constraint:false"\n'
                     "   并在 gorm.Config 设置 DisableForeignKeyConstraintWhenMigrating: true"))
 
+    # ── R19: *gorm.DB 跨 goroutine 共享（goroutine 不安全）────────────────
+    for i, line in enumerate(lines, 1):
+        s = line.strip()
+        if re.search(r'\bgo\s+func\s*\(', s):
+            block = "\n".join(lines[i:min(i+15, len(lines))])
+            if re.search(r'\b(db|baseDB|queryDB)\.(Find|First|Create|Update|Delete|Where)\b', block):
+                if "Session(" not in block and "NewDB" not in block:
+                    issues.append(Issue("WARN", "GOROUTINE_DB_UNSAFE", i, s,
+                        "goroutine 内使用外部 *gorm.DB 实例存在数据竞争风险。"
+                        "应在 goroutine 内用 db.Session(&gorm.Session{NewDB:true}) 创建独立副本"))
+                    break
+
+    # ── R20: 复用 *gorm.DB 未 Session 隔离导致条件累积──────────────────
+    db_ops_lines = []
+    for i, line in enumerate(lines, 1):
+        s = line.strip()
+        if re.search(r'\b(db|queryDB|baseDB)\.(Find|First|Take|Count)\b', s):
+            db_ops_lines.append((i, s))
+    for idx in range(len(db_ops_lines) - 1):
+        line_a_no, _ = db_ops_lines[idx]
+        line_b_no, line_b = db_ops_lines[idx + 1]
+        if line_b_no - line_a_no <= 10:
+            between = "\n".join(lines[line_a_no:line_b_no-1])
+            if "Session(" not in between and "NewDB" not in between:
+                if not any(iss.rule == "DB_CONDITION_ACCUMULATION" for iss in issues):
+                    issues.append(Issue("INFO", "DB_CONDITION_ACCUMULATION", line_b_no, line_b,
+                        "多次复用同一 *gorm.DB 实例查询，可能导致 WHERE 条件累积。"
+                        "两次查询之间应用 db.Session(&gorm.Session{NewDB:true}) 隔离"))
+
+    # ── R21: 使用 v1 的 gorm.IsRecordNotFoundError（v2 已移除）──────────
+    for i, line in enumerate(lines, 1):
+        s = line.strip()
+        if "gorm.IsRecordNotFoundError" in s:
+            issues.append(Issue("ERROR", "V1_NOT_FOUND_API", i, s,
+                "gorm.IsRecordNotFoundError 是 GORM v1 API，v2 已移除。"
+                "请改用: errors.Is(err, gorm.ErrRecordNotFound)"))
+
     return issues
 
 

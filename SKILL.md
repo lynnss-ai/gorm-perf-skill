@@ -1,6 +1,6 @@
 ---
 name: gorm-perf
-version: 1.2.0
+version: 1.3.0
 description: >
   GORM 使用与性能优化专项技能，覆盖以下场景：
   (1) GORM 代码审查、编写、调试；
@@ -16,10 +16,16 @@ description: >
   (11) 分库分表（Sharding）配置与分片键设计；
   (12) 监控与可观测性（Prometheus 指标、慢查询告警、OpenTelemetry 链路追踪）；
   (13) Scopes 可复用查询条件与多租户行级隔离；
-  (14) Redis Cache-Aside 缓存集成（防击穿、防雪崩、缓存一致性）。
+  (14) Redis Cache-Aside 缓存集成（防击穿、防雪崩、缓存一致性）；
+  (15) GORM v2 Session 机制与 goroutine 安全；
+  (16) Clause 系统（Upsert、FOR UPDATE、RETURNING）；
+  (17) Association 关联操作（Preload/Joins/Append/Replace）；
+  (18) Serializer 与自定义数据类型（枚举、Money、加密字段）。
   适用于用户提到"写个查询"、"数据库好慢"、"怎么加索引"、"帮我写个 struct"、
   "分库分表怎么配"、"GORM 怎么接 Prometheus"、"链路追踪"、
-  "怎么写 Scope"、"多租户怎么隔离"、"GORM 怎么加缓存"等场景。
+  "怎么写 Scope"、"多租户怎么隔离"、"GORM 怎么加缓存"、"Session 条件累积"、"goroutine 里用 db"、
+  "FOR UPDATE"、"RETURNING"、"Preload 和 Joins"、
+  "自定义类型映射"、"字段加密"等场景。
 ---
 
 # GORM 使用与性能优化 Skill
@@ -31,7 +37,7 @@ description: >
 
 | 场景 | 脚本 | 用法示例 |
 |------|------|---------|
-| 用户粘贴 Go 代码，问"有没有问题/如何优化" | `scripts/analyze_gorm.py` | `python3 scripts/analyze_gorm.py - <<< "代码"` |
+| 用户粘贴 Go 代码，问"有没有问题/如何优化" | `scripts/analyze_gorm.py` | `python3 scripts/analyze_gorm.py - <<< "代码"`（R1–R21，含 v2 专属检测） |
 | 用户提供 CREATE TABLE SQL，需要生成 struct | `scripts/gen_model.py` | `echo "CREATE TABLE..." \| python3 scripts/gen_model.py -` |
 | 用户问连接池怎么配置，提供了 QPS/实例数等参数 | `scripts/pool_advisor.py` | `python3 scripts/pool_advisor.py --qps 500 --avg-latency-ms 20 --app-instances 4` |
 | 用户提供 SQL，问性能/索引问题 | `scripts/query_explain.py` | `python3 scripts/query_explain.py "SELECT * FROM ..."` |
@@ -266,6 +272,12 @@ db.Model(&user).Update("name", "new")
 
 // ✅ Select 限制只更新指定字段（防止意外覆盖）
 db.Model(&user).Select("name", "email").Updates(&user)
+
+// ✅ Select("*") 强制更新所有字段（包括零值），v2 新增
+db.Model(&user).Select("*").Updates(&user)
+
+// ✅ Omit 排除特定字段不更新
+db.Model(&user).Omit("password", "created_at").Updates(&user)
 ```
 
 ### 3.3 高效 Upsert
@@ -644,7 +656,113 @@ db.WithContext(ctx).Find(&users) // ctx 需携带 trace context
 
 ---
 
-## 13. 进阶参考
+## 13. GORM v2 核心机制
+
+### 14.1 Session 与 goroutine 安全
+
+```go
+// ❌ 危险：链式条件累积，跨 goroutine 数据竞争
+base := db.Where("tenant_id = ?", tenantID)
+go func() { base.Find(&list1) }()  // 数据竞争！
+go func() { base.Find(&list2) }()  // 数据竞争！
+
+// ✅ 每次查询 Session 隔离
+base := db.Where("tenant_id = ?", tenantID)
+go func() { base.Session(&gorm.Session{NewDB: true}).Find(&list1) }()
+go func() { base.Session(&gorm.Session{NewDB: true}).Find(&list2) }()
+
+// ✅ ToSQL 调试（不执行）
+sql := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+    return tx.Where("id > ?", 100).Limit(10).Find(&users)
+})
+```
+
+> 完整 Session 配置项、PrepareStmt 缓存清理、陷阱汇总见 `references/session.md`
+
+### 14.2 Clause 系统
+
+```go
+// FOR UPDATE（库存/余额扣减）
+db.Clauses(clause.Locking{Strength: "UPDATE"}).First(&stock)
+
+// SKIP LOCKED（任务队列抢占）
+db.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+    Limit(10).Find(&tasks)
+
+// Upsert（OnConflict）
+db.Clauses(clause.OnConflict{
+    Columns:   []clause.Column{{Name: "email"}},
+    DoUpdates: clause.AssignmentColumns([]string{"name", "updated_at"}),
+}).Create(&user)
+
+// RETURNING（PostgreSQL）
+db.Clauses(clause.Returning{}).Create(&user) // 自动填充 DB 生成的字段
+```
+
+> Clause 完整用法、自定义 Clause 表达式见 `references/clause.md`
+
+### 14.3 Association 关联操作
+
+```go
+// 禁止物理外键，关联字段加 constraint:false
+type User struct {
+    Orders []Order `gorm:"foreignKey:UserID;constraint:false"`
+}
+
+// Preload（推荐：两次查询，内存友好）
+db.Preload("Orders", "status = ?", "paid").Find(&users)
+db.Preload(clause.Associations).Find(&users) // 预加载所有关联
+
+// 精确控制级联写入
+db.Omit(clause.Associations).Create(&user)  // 只写 user，跳过所有关联
+db.Select("Orders").Create(&user)            // 只写 user + Orders
+
+// Association 操作
+db.Model(&user).Association("Orders").Append(&order)  // 添加关联
+db.Model(&user).Association("Orders").Replace(&order) // 替换所有关联
+db.Model(&user).Association("Orders").Delete(&order)  // 移除关联
+```
+
+> 完整示例、多对多、软删除处理见 `references/association.md`
+
+### 14.4 Serializer 与自定义类型
+
+```go
+// JSON 序列化（推荐替代 string 存 JSON）
+type User struct {
+    Tags    []string `gorm:"type:json;serializer:json"`
+    Address Address  `gorm:"type:json;serializer:json"`
+}
+
+// 自定义类型（枚举 / Money / 加密字段）
+type OrderStatus int8
+func (s OrderStatus) Value() (driver.Value, error) { return int64(s), nil }
+func (s *OrderStatus) Scan(v interface{}) error { *s = OrderStatus(v.(int64)); return nil }
+
+// 自定义加密 Serializer
+type User struct {
+    Phone string `gorm:"serializer:encrypted"` // 存储时自动加密，读取时自动解密
+}
+```
+
+> 完整实现（Money 类型、GormDataType 接口、选型建议）见 `references/serializer.md`
+
+### 14.5 Error 处理规范（v2）
+
+```go
+// ✅ v2 正确写法
+if errors.Is(err, gorm.ErrRecordNotFound) { }
+
+// ❌ v1 旧写法，v2 已移除（analyze_gorm.py R21 会检测）
+if gorm.IsRecordNotFoundError(err) { }
+
+// Find 不触发 ErrRecordNotFound（返回空切片）
+// First / Take / Last 触发 ErrRecordNotFound
+```
+
+---
+
+## 14. 进阶参考
 
 详细专题见 `references/` 目录（按需加载，不要全量读入）：
 
@@ -661,3 +779,7 @@ db.WithContext(ctx).Find(&users) // ctx 需携带 trace context
 | `references/scopes.md` | 可复用 Scope、分页、多租户行级隔离 | 用户问 Scope 用法、多租户设计 |
 | `references/caching.md` | Cache-Aside、防击穿/雪崩/穿透、缓存一致性 | 用户问 GORM + Redis 缓存集成 |
 | `references/base-model-pattern.md` | 泛型 BaseModel 常见 Bug、游标分页、多租户强制隔离 | 用户问 BaseModel 设计、QueryBuilder、分页优化 |
+| `references/session.md` | Session 机制、goroutine 安全、条件累积防范 | 用户问 Session、db 复用、DryRun |
+| `references/clause.md` | Clause 系统（Upsert/FOR UPDATE/RETURNING/自定义） | 用户问 FOR UPDATE、Upsert、RETURNING |
+| `references/association.md` | Association 关联操作、Preload/Joins、级联控制 | 用户问关联加载、Preload、多对多 |
+| `references/serializer.md` | Serializer、自定义数据类型（枚举/Money/加密） | 用户问字段序列化、自定义类型映射 |

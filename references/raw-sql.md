@@ -83,3 +83,69 @@ db.Where("name = @name OR email = @email", sql.Named("name", "jinzhu"), sql.Name
 // Raw 同样支持
 db.Raw("SELECT * FROM users WHERE name = @name", map[string]any{"name": "jinzhu"}).Scan(&users)
 ```
+
+---
+
+## Find / First / Take / Last 行为差异（v2 重要变化）
+
+### 方法对比
+
+| 方法 | 隐式 ORDER BY | 触发 ErrRecordNotFound | 适用场景 |
+|------|-------------|----------------------|---------|
+| `First` | `ORDER BY id ASC LIMIT 1` | ✅ 是 | 按主键取第一条 |
+| `Last` | `ORDER BY id DESC LIMIT 1` | ✅ 是 | 按主键取最后一条 |
+| `Take` | 无 | ✅ 是 | 不需要排序的单条查询（推荐） |
+| `Find` | 无 | ❌ 否（返回空切片） | 查询列表 |
+
+```go
+// First / Last / Take：找不到时返回 gorm.ErrRecordNotFound
+var user User
+err := db.Where("id = ?", 999).First(&user).Error
+if errors.Is(err, gorm.ErrRecordNotFound) {
+    // 正常处理：记录不存在
+}
+
+// ❌ v1 的旧写法，v2 中已移除
+// if gorm.IsRecordNotFoundError(err) { ... }
+
+// Find：找不到时不报错，返回空切片
+var users []User
+db.Where("status = ?", 99).Find(&users)
+// err == nil，len(users) == 0
+
+// ✅ 按主键查单条，用 Take（无 ORDER BY 开销）
+db.Where("id = ?", id).Take(&user)
+
+// ✅ 需要有序取第一条，用 First
+db.Where("status = ?", "pending").Order("priority DESC").First(&task)
+```
+
+### Error 处理规范（v2）
+
+```go
+// ✅ v2 正确写法：errors.Is
+if errors.Is(err, gorm.ErrRecordNotFound) { }
+if errors.Is(err, gorm.ErrInvalidTransaction) { }
+if errors.Is(err, gorm.ErrMissingWhereClause) { }
+
+// ✅ 封装辅助函数，统一处理
+func IsNotFound(err error) bool {
+    return errors.Is(err, gorm.ErrRecordNotFound)
+}
+
+func IgnoreNotFound(err error) error {
+    if IsNotFound(err) {
+        return nil
+    }
+    return err
+}
+
+// 使用
+user, err := userModel.Find(ctx, id)
+if err != nil {
+    if IsNotFound(err) {
+        return nil, ErrUserNotFound // 转换为业务错误
+    }
+    return nil, err
+}
+```

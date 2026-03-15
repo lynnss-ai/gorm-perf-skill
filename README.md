@@ -48,6 +48,10 @@ gorm-perf/
     ├── scopes.md                 # Scopes 完整参考（NEW v1.1.0）
     └── caching.md                # 缓存集成完整参考（NEW v1.1.0）
     └── base-model-pattern.md    # 泛型 BaseModel 规范与 Bug 修复记录（NEW v1.1.1）
+    ├── session.md                # GORM v2 Session 机制与 goroutine 安全（NEW v1.3.0）
+    ├── clause.md                 # Clause 系统（FOR UPDATE/Upsert/RETURNING）（NEW v1.3.0）
+    ├── association.md            # Association 关联操作（NEW v1.3.0）
+    └── serializer.md             # Serializer 与自定义数据类型（NEW v1.3.0）
 assets/
 └── dbcore/
     ├── base_model.go             # 修复版 BaseModel 源文件
