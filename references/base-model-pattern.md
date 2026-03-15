@@ -242,31 +242,45 @@ page2, _ := model.PageAfter(ctx, lastID, 20, "status=?", nil, 1)
 
 ---
 
-## 8. 多租户隔离在 Model 层强制
+## 8. 多租户隔离（可开关）
+
+多租户通过 `dbcore.Config` 全局配置，支持开启和关闭：
 
 ```go
-// ❌ 通用方法不知道租户概念，调用方需手动带 tenant_id=? 条件
-// 容易漏写导致数据越权
-orders, _ := model.List(ctx, "order_status=?", nil, 1) // 漏了 tenant_id！
+// ✅ 开启多租户（程序初始化时调用一次）
+dbcore.SetConfig(dbcore.Config{
+    TenantEnabled: true,            // 开启多租户隔离
+    TenantField:   "tenant_id",     // 租户字段名（默认 "tenant_id"）
+    TenantStrict:  true,            // 严格模式：无租户时拒绝查询
+    TenantExtractor: func(ctx context.Context) string {
+        if tid, ok := ctx.Value("tenant_id").(string); ok {
+            return tid
+        }
+        return ""
+    },
+})
 
-// ✅ 在具体 Model 覆写，注入 tenant_id
-func (m *defaultOrderModel) ListByTenant(ctx context.Context,
-    tenantID string, query string,
-    orders []dbcore.Order, args ...interface{}) ([]*Order, error) {
-
-    if tenantID == "" {
-        return []*Order{}, nil // 无租户信息时拒绝查询
-    }
-    if query != "" {
-        query = "tenant_id = ? AND (" + query + ")"
-        args = append([]interface{}{tenantID}, args...)
-    } else {
-        query = "tenant_id = ?"
-        args = []interface{}{tenantID}
-    }
-    return m.List(ctx, query, orders, args...)
-}
+// ✅ 关闭多租户（默认值，无需调用 SetConfig）
+// 或显式关闭：
+dbcore.SetConfig(dbcore.Config{TenantEnabled: false})
 ```
+
+**工作原理**：开启后 `BaseModel.GetTxDB()` 自动注入 `WHERE tenant_id = ?`，
+所有 CRUD 方法（List/Page/Find/Delete/Update）均自动隔离，无需手动拼接条件。
+
+```go
+// 开启多租户后，调用方只需确保 ctx 中携带租户信息
+ctx := context.WithValue(ctx, "tenant_id", "tenant_001")
+orders, _ := model.List(ctx, "order_status=?", nil, 1)
+// 实际执行: WHERE tenant_id = 'tenant_001' AND order_status = 1
+
+// 严格模式下，ctx 无租户信息时自动拒绝查询（WHERE 1=0）
+orders, _ := model.List(context.Background(), "", nil)
+// 实际执行: WHERE 1=0 → 返回空结果，防止数据越权
+```
+
+> **何时开启**：SaaS 多租户系统、需要行级数据隔离的场景。
+> **何时关闭**：单租户系统、内部工具、无租户概念的项目。
 
 ---
 
@@ -288,7 +302,106 @@ db.Where(datatypes.JSONQuery("ext_data").Equals("神州", "source")).Find(&order
 
 ---
 
-## 10. QueryBuilder.OrGroup —— OR 分组支持
+## 10. Page / PageAfter 参数校验
+
+### 问题
+
+```go
+// ❌ page=0 或 page=-1 会导致负 offset → SQL 报错或返回空
+offset := (page - 1) * pageSize  // page=0 → offset=-20
+
+// ❌ pageSize=0 → LIMIT 0 永远返回空
+// ❌ pageSize=999999 → 一次查百万行 OOM
+```
+
+### 修复
+
+```go
+// ✅ Page 方法自动校正参数
+if page <= 0 {
+    page = 1
+}
+if pageSize <= 0 {
+    pageSize = 20
+} else if pageSize > 1000 {
+    pageSize = 1000
+}
+```
+
+> PageAfter 同理，自动校正 `pageSize`。上限 1000 是合理默认，实际业务可按需调整常量。
+
+---
+
+## 11. IN 子句大小限制
+
+### 问题
+
+```go
+// ❌ 传入 10 万个 ID，生成的 SQL 可能超过 max_allowed_packet
+model.DeleteByIds(ctx, hugeSlice) // WHERE id IN (?, ?, ?, ... 100000 个)
+```
+
+### 修复
+
+```go
+const maxInSize = 1000
+
+func (m *BaseModel[T]) DeleteByIds(ctx context.Context, ids []string) error {
+    if len(ids) > maxInSize {
+        return fmt.Errorf("dbcore: DeleteByIds count %d exceeds max %d", len(ids), maxInSize)
+    }
+    // ...
+}
+```
+
+> `ListByIds` 同样有此限制。超限场景建议分批处理或改用 `DeleteBy` / `List` + 条件查询。
+
+---
+
+## 12. List 方法 Limit 保护
+
+### 问题
+
+```go
+// ❌ List 无条件调用时可能全表扫描
+model.List(ctx, "", nil) // 等同于 SELECT * FROM orders → 百万行 OOM
+```
+
+### 修复
+
+```go
+const maxListSize = 5000
+
+func (m *BaseModel[T]) List(...) ([]*T, error) {
+    // ...
+    return list, db.Limit(maxListSize).Find(&list).Error
+}
+```
+
+> 三层保护梯度：
+> - `List` → `maxListSize = 5000`（带 WHERE 场景）
+> - `ListAll` → `maxListAllSize = 10000`（全量加载场景）
+> - 超大数据集 → `FindInBatches` / `PageAfter` 游标分页
+
+---
+
+## 13. QueryBuilder.NotLike 方法
+
+```go
+// ✅ 排除包含特定关键词的记录
+qb := NewQueryBuilder().
+    Eq("status", 1).
+    NotLike("name", "测试")  // name NOT LIKE '%测试%'
+query, args := qb.Build()
+// query: "status = ? AND name NOT LIKE ?"
+// args:  [1, "%测试%"]
+```
+
+> 与 Like / LikeLeft / LikeRight 对称，同样经过 `safeField()` 校验防注入。
+
+---
+
+## 14. QueryBuilder.OrGroup —— OR 分组支持
 
 ```go
 // ❌ 原版只能通过 Raw() 手写 OR 条件，容易出错

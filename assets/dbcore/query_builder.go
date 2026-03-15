@@ -40,7 +40,7 @@ func NewQueryBuilder() *QueryBuilder {
 // Like 模糊查询（包含匹配）: field LIKE '%value%'
 func (q *QueryBuilder) Like(field string, value string) *QueryBuilder {
 	if value != "" {
-		q.conditions = append(q.conditions, fmt.Sprintf("%s LIKE ?", field))
+		q.conditions = append(q.conditions, fmt.Sprintf("%s LIKE ?", safeField(field)))
 		q.args = append(q.args, "%"+value+"%")
 	}
 	return q
@@ -49,7 +49,7 @@ func (q *QueryBuilder) Like(field string, value string) *QueryBuilder {
 // LikeLeft 左模糊查询（以指定值结尾）: field LIKE '%value'
 func (q *QueryBuilder) LikeLeft(field string, value string) *QueryBuilder {
 	if value != "" {
-		q.conditions = append(q.conditions, fmt.Sprintf("%s LIKE ?", field))
+		q.conditions = append(q.conditions, fmt.Sprintf("%s LIKE ?", safeField(field)))
 		q.args = append(q.args, "%"+value)
 	}
 	return q
@@ -59,7 +59,7 @@ func (q *QueryBuilder) LikeLeft(field string, value string) *QueryBuilder {
 // 推荐优先使用此方法替代 Like，可走索引
 func (q *QueryBuilder) LikeRight(field string, value string) *QueryBuilder {
 	if value != "" {
-		q.conditions = append(q.conditions, fmt.Sprintf("%s LIKE ?", field))
+		q.conditions = append(q.conditions, fmt.Sprintf("%s LIKE ?", safeField(field)))
 		q.args = append(q.args, value+"%")
 	}
 	return q
@@ -71,7 +71,7 @@ func (q *QueryBuilder) LikeRight(field string, value string) *QueryBuilder {
 // 注意: int/int64/float64 类型的 0 被视为有效值，不会被忽略
 func (q *QueryBuilder) Eq(field string, value interface{}) *QueryBuilder {
 	if !isEmpty(value) {
-		q.conditions = append(q.conditions, fmt.Sprintf("%s = ?", field))
+		q.conditions = append(q.conditions, fmt.Sprintf("%s = ?", safeField(field)))
 		q.args = append(q.args, value)
 	}
 	return q
@@ -81,7 +81,7 @@ func (q *QueryBuilder) Eq(field string, value interface{}) *QueryBuilder {
 // 使用场景: 查询参数中 0 表示"全部"，> 0 表示具体状态
 func (q *QueryBuilder) EqIfPositive(field string, value int) *QueryBuilder {
 	if value > 0 {
-		q.conditions = append(q.conditions, fmt.Sprintf("%s = ?", field))
+		q.conditions = append(q.conditions, fmt.Sprintf("%s = ?", safeField(field)))
 		q.args = append(q.args, value)
 	}
 	return q
@@ -90,7 +90,7 @@ func (q *QueryBuilder) EqIfPositive(field string, value int) *QueryBuilder {
 // Ne 不等于查询: field != value
 func (q *QueryBuilder) Ne(field string, value interface{}) *QueryBuilder {
 	if !isEmpty(value) {
-		q.conditions = append(q.conditions, fmt.Sprintf("%s != ?", field))
+		q.conditions = append(q.conditions, fmt.Sprintf("%s != ?", safeField(field)))
 		q.args = append(q.args, value)
 	}
 	return q
@@ -99,7 +99,7 @@ func (q *QueryBuilder) Ne(field string, value interface{}) *QueryBuilder {
 // Gt 大于查询: field > value
 func (q *QueryBuilder) Gt(field string, value interface{}) *QueryBuilder {
 	if !isEmpty(value) {
-		q.conditions = append(q.conditions, fmt.Sprintf("%s > ?", field))
+		q.conditions = append(q.conditions, fmt.Sprintf("%s > ?", safeField(field)))
 		q.args = append(q.args, value)
 	}
 	return q
@@ -108,7 +108,7 @@ func (q *QueryBuilder) Gt(field string, value interface{}) *QueryBuilder {
 // Gte 大于等于查询: field >= value
 func (q *QueryBuilder) Gte(field string, value interface{}) *QueryBuilder {
 	if !isEmpty(value) {
-		q.conditions = append(q.conditions, fmt.Sprintf("%s >= ?", field))
+		q.conditions = append(q.conditions, fmt.Sprintf("%s >= ?", safeField(field)))
 		q.args = append(q.args, value)
 	}
 	return q
@@ -117,7 +117,7 @@ func (q *QueryBuilder) Gte(field string, value interface{}) *QueryBuilder {
 // Lt 小于查询: field < value
 func (q *QueryBuilder) Lt(field string, value interface{}) *QueryBuilder {
 	if !isEmpty(value) {
-		q.conditions = append(q.conditions, fmt.Sprintf("%s < ?", field))
+		q.conditions = append(q.conditions, fmt.Sprintf("%s < ?", safeField(field)))
 		q.args = append(q.args, value)
 	}
 	return q
@@ -126,7 +126,7 @@ func (q *QueryBuilder) Lt(field string, value interface{}) *QueryBuilder {
 // Lte 小于等于查询: field <= value
 func (q *QueryBuilder) Lte(field string, value interface{}) *QueryBuilder {
 	if !isEmpty(value) {
-		q.conditions = append(q.conditions, fmt.Sprintf("%s <= ?", field))
+		q.conditions = append(q.conditions, fmt.Sprintf("%s <= ?", safeField(field)))
 		q.args = append(q.args, value)
 	}
 	return q
@@ -136,7 +136,7 @@ func (q *QueryBuilder) Lte(field string, value interface{}) *QueryBuilder {
 // 注意: start 和 end 必须同时有效才会生成条件
 func (q *QueryBuilder) Between(field string, start, end interface{}) *QueryBuilder {
 	if !isEmpty(start) && !isEmpty(end) {
-		q.conditions = append(q.conditions, fmt.Sprintf("%s BETWEEN ? AND ?", field))
+		q.conditions = append(q.conditions, fmt.Sprintf("%s BETWEEN ? AND ?", safeField(field)))
 		q.args = append(q.args, start, end)
 	}
 	return q
@@ -152,7 +152,7 @@ func (q *QueryBuilder) In(field string, values []interface{}) *QueryBuilder {
 			placeholders[i] = "?"
 		}
 		q.conditions = append(q.conditions,
-			fmt.Sprintf("%s IN (%s)", field, strings.Join(placeholders, ",")))
+			fmt.Sprintf("%s IN (%s)", safeField(field), strings.Join(placeholders, ",")))
 		q.args = append(q.args, values...)
 	}
 	return q
@@ -172,7 +172,7 @@ func (q *QueryBuilder) InStrings(field string, values []string) *QueryBuilder {
 			ifaces[i] = v
 		}
 		q.conditions = append(q.conditions,
-			fmt.Sprintf("%s IN (%s)", field, strings.Join(placeholders, ",")))
+			fmt.Sprintf("%s IN (%s)", safeField(field), strings.Join(placeholders, ",")))
 		q.args = append(q.args, ifaces...)
 	}
 	return q
@@ -190,7 +190,7 @@ func (q *QueryBuilder) InInts(field string, values []int) *QueryBuilder {
 			ifaces[i] = v
 		}
 		q.conditions = append(q.conditions,
-			fmt.Sprintf("%s IN (%s)", field, strings.Join(placeholders, ",")))
+			fmt.Sprintf("%s IN (%s)", safeField(field), strings.Join(placeholders, ",")))
 		q.args = append(q.args, ifaces...)
 	}
 	return q
@@ -204,8 +204,17 @@ func (q *QueryBuilder) NotIn(field string, values []interface{}) *QueryBuilder {
 			placeholders[i] = "?"
 		}
 		q.conditions = append(q.conditions,
-			fmt.Sprintf("%s NOT IN (%s)", field, strings.Join(placeholders, ",")))
+			fmt.Sprintf("%s NOT IN (%s)", safeField(field), strings.Join(placeholders, ",")))
 		q.args = append(q.args, values...)
+	}
+	return q
+}
+
+// NotLike 模糊排除查询: field NOT LIKE '%value%'
+func (q *QueryBuilder) NotLike(field string, value string) *QueryBuilder {
+	if value != "" {
+		q.conditions = append(q.conditions, fmt.Sprintf("%s NOT LIKE ?", safeField(field)))
+		q.args = append(q.args, "%"+value+"%")
 	}
 	return q
 }
@@ -214,13 +223,13 @@ func (q *QueryBuilder) NotIn(field string, values []interface{}) *QueryBuilder {
 
 // IsNull 空值查询: field IS NULL
 func (q *QueryBuilder) IsNull(field string) *QueryBuilder {
-	q.conditions = append(q.conditions, fmt.Sprintf("%s IS NULL", field))
+	q.conditions = append(q.conditions, fmt.Sprintf("%s IS NULL", safeField(field)))
 	return q
 }
 
 // IsNotNull 非空值查询: field IS NOT NULL
 func (q *QueryBuilder) IsNotNull(field string) *QueryBuilder {
-	q.conditions = append(q.conditions, fmt.Sprintf("%s IS NOT NULL", field))
+	q.conditions = append(q.conditions, fmt.Sprintf("%s IS NOT NULL", safeField(field)))
 	return q
 }
 
@@ -255,7 +264,7 @@ func (q *QueryBuilder) OrGroup(conditions ...*QueryBuilder) *QueryBuilder {
 		q.args = append(q.args, subArgs...)
 	}
 	if len(parts) > 0 {
-		q.conditions = append(q.conditions, strings.Join(parts, " OR "))
+		q.conditions = append(q.conditions, "("+strings.Join(parts, " OR ")+")")
 	}
 	return q
 }
@@ -294,6 +303,18 @@ func (q *QueryBuilder) BuildWithPrefix(prefix string) (string, []interface{}) {
 }
 
 // ==================== 辅助函数 ====================
+
+// safeField 校验字段名，防止 SQL 注入
+// 只允许字母、数字、下划线和点号（支持 table.column 格式）
+func safeField(field string) string {
+	for _, c := range field {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '.') {
+			panic(fmt.Sprintf("dbcore: invalid field name %q (only [a-zA-Z0-9_.] allowed)", field))
+		}
+	}
+	return field
+}
 
 // isEmpty 判断值是否为空（nil 或空字符串）
 // int/int64/float64 类型的 0 视为有效值，返回 false

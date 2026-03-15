@@ -180,7 +180,7 @@ func StartPoolMonitor(db *gorm.DB, interval time.Duration) {{
 \t\tfor range ticker.C {{
 \t\t\tsqlDB, _ := db.DB()
 \t\t\tstats := sqlDB.Stats()
-\t\t\t// 连接池使用率告警阈值: {int(result['max_open'] * 0.9)} ({{}:.0%} of MaxOpen={result['max_open']})
+\t\t\t// 连接池使用率告警阈值: {int(result['max_open'] * 0.9)} (90% of MaxOpen={result['max_open']})
 \t\t\tif stats.InUse >= {int(result['max_open'] * 0.9)} {{
 \t\t\t\tlog.Warn("db pool near exhaustion",
 \t\t\t\t\t"in_use", stats.InUse, "max_open", {result['max_open']})

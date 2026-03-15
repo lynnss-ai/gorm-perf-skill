@@ -5,6 +5,90 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.6.0] - 2026-03-15
+
+### Added
+- `base_model.go` 新增 `Config` 全局配置系统：
+  - 多租户开关（`TenantEnabled`/`TenantField`/`TenantExtractor`/`TenantStrict`）
+  - 可配置查询限制（`MaxListSize`/`MaxListAllSize`/`MaxInSize`/`MaxPageSize`）
+  - `SetConfig()` / `GetConfig()` 全局配置函数
+- `base_model.go` `GetTxDB` 自动注入多租户条件，所有 CRUD 方法自动隔离
+- `analyze_gorm.py` R27: `references:` tag 未加 `constraint:false` 检测（ERROR）
+
+### Changed
+- SKILL.md 核心原则 #1 改为「禁止物理外键，必须使用逻辑外键」
+- SKILL.md §1 新增多租户 Config 配置示例，§6 多租户改为 Config 驱动
+- SKILL.md §7 补充 `references:` tag 的逻辑外键规范
+- `base_model.go` 所有硬编码限制常量改为读取 `globalConfig`
+- `example_order_model.go` 多租户改为 Config 驱动（移除手动 injectTenant）
+- `init_project.py` 后续步骤新增多租户 Config 配置示例
+- `references/base-model-pattern.md` §8 重写为 Config 开关式多租户文档
+
+---
+
+## [1.5.1] - 2026-03-15
+
+### Added
+- `base_model.go` Page/PageAfter 参数自动校验（page≤0→1, pageSize 范围 [1,1000]）
+- `base_model.go` IN 子句大小限制 `maxInSize=1000`（DeleteByIds/ListByIds 超限报错）
+- `base_model.go` List 方法新增 `maxListSize=5000` 软上限保护
+- `query_builder.go` 新增 `NotLike` 方法（NOT LIKE '%value%'）
+- `analyze_gorm.py` R26: 大 IN 子句检测（WARN）
+- `references/base-model-pattern.md` 新增 §10–§13 文档（参数校验、IN 限制、List 保护、NotLike）
+
+### Changed
+- SKILL.md 按 Claude Code Skill 最新规范重构：
+  - 移除非标准 frontmatter 字段（`version`、`compatibility`）
+  - `description` 精简至 4 行（含触发词）
+  - 合并 §0/§1 为统一的「初始化与连接池」章节
+  - 压缩重复代码示例，583 → 440 行（规范要求 ≤500）
+  - §14 参考表去除冗余 `references/` 前缀，精简触发时机列
+
+---
+
+## [1.5.0] - 2026-03-15
+
+### Added
+- `assets/dbcore/auto_id.go` 重写为可插拔 ID 生成器架构：
+  - `IDGenerator` 接口 + `SetIDGenerator()` 全局切换
+  - `NewSnowflakeGenerator` — 内置雪花算法（无需外部依赖 bwmarrin/snowflake），含时钟回拨保护（≤5s 等待，>5s panic）
+  - `NewLeafSegmentGenerator` — 美团 Leaf 号段模式（双 Buffer 异步预加载，严格递增）
+  - `NewUUIDGenerator` — UUID v4（零依赖）
+  - `autoFillID` 支持 string / int64 / uint64 类型 ID 字段
+  - `WithIDGenerator` / `IDGeneratorFromContext` 支持 context 级别策略切换
+- `references/id-generation.md` — 分布式 ID 策略完整指南：
+  - Snowflake vs Leaf-Segment vs UUID 选型对比表
+  - 时钟回拨原因、保护机制、chrony 配置建议
+  - K8s nodeID 管理（StatefulSet / Redis INCR / 环境变量注入）
+  - Leaf 号段表建表 SQL、step 调优、高可用与容灾
+  - UUID 性能问题（B-Tree 页分裂实测数据）与优化方案（BINARY(16) / UUID v7）
+  - 自定义 ID 生成器示例（Redis 自增、ULID）
+  - 从 AUTO_INCREMENT 迁移到分布式 ID 的步骤
+- `references/soft-delete.md` — 软删除完整指南（唯一约束兼容、时间戳模式、归档清理）
+- SKILL.md §2.4 投影到自定义 struct（Scan/ScanRows 流式读取）
+- SKILL.md §2.5 Group/Having/Distinct/SubQuery 用法
+- SKILL.md §3.3 RowsAffected 检查模式
+- SKILL.md §9 新增反模式：Save 全量更新、忽略 RowsAffected
+- `analyze_gorm.py` 新增 5 条规则：
+  - R22: Where 字符串拼接（SQL 注入）
+  - R23: 未检查 RowsAffected（INFO）
+  - R24: Save 全量更新警告（INFO）
+  - R25: AutoMigrate 在业务代码中调用（WARN）
+- `analyze_gorm.py --format json` CI 集成输出格式
+
+### Fixed
+- `gen_model.py:294` — TableName 方法接收者语法错误（多余的右括号）
+- `query_builder.go` OrGroup 缺少外层括号，导致 AND/OR 优先级错误
+  - 修改前: `name = ? AND (status = ?) OR (status = ?)` — 逻辑错误
+  - 修改后: `name = ? AND ((status = ?) OR (status = ?))` — 正确
+- `analyze_gorm.py` docstring 规则范围标注修正（R1–R18 → R1–R26）
+
+### Security
+- `query_builder.go` 所有字段名参数增加 `safeField()` 校验，防止 SQL 注入
+- `base_model.go` Order.Field 增加正则校验，只允许 `[a-zA-Z0-9_.]`
+
+---
+
 ## [1.4.0] - 2026-03-15
 
 ### Changed

@@ -291,7 +291,7 @@ def generate_struct(table: Table) -> str:
     # 生成 TableName 方法（如果没用 gorm.Model 或表名不规范）
     expected_table = table.name
     if not use_gorm_model:
-        lines.append(f"func ({struct_name[0].lower()}) {struct_name}) TableName() string {{")
+        lines.append(f"func ({struct_name[0].lower()} {struct_name}) TableName() string {{")
         lines.append(f'\treturn "{expected_table}"')
         lines.append("}")
         lines.append("")

@@ -117,17 +117,16 @@ func (Order) TableName() string { return "ota_order" }
 // ============================================================
 
 // IOrderModel 扩展 IBaseModel，补充业务特有查询
+//
+// 多租户说明：
+//   - 若启用多租户（dbcore.SetConfig 中 TenantEnabled=true），BaseModel 的
+//     GetTxDB 会自动注入 tenant_id 条件，无需在每个方法中手动拼接。
+//   - 若未启用多租户，所有方法按普通单租户模式工作。
 type IOrderModel interface {
 	dbcore.IBaseModel[Order]
 
 	// FindByPlatformOrderNo 按平台ID + 平台订单号查询（幂等检查用）
 	FindByPlatformOrderNo(ctx context.Context, platformID, platformOrderNo string) (*Order, error)
-
-	// ListByTenant 按租户查询（强制注入 tenant_id，防止数据越权）
-	ListByTenant(ctx context.Context, tenantID string, query string, orders []dbcore.Order, args ...interface{}) ([]*Order, error)
-
-	// PageByTenant 按租户分页查询
-	PageByTenant(ctx context.Context, tenantID string, page, pageSize int, query string, orders []dbcore.Order, args ...interface{}) ([]*Order, int64, error)
 }
 
 // ============================================================
@@ -161,31 +160,10 @@ func (m *orderModel) FindByPlatformOrderNo(ctx context.Context, platformID, plat
 	return m.First(ctx, "platform_id = ? AND platform_order_no = ?", platformID, platformOrderNo)
 }
 
-// ListByTenant 多租户查询
-// 强制在 Service 层之下注入 tenant_id，调用方无需手动拼接条件
-func (m *orderModel) ListByTenant(ctx context.Context, tenantID string, query string, orders []dbcore.Order, args ...interface{}) ([]*Order, error) {
-	if tenantID == "" {
-		return []*Order{}, nil
-	}
-	query, args = injectTenant(tenantID, query, args)
-	return m.List(ctx, query, orders, args...)
-}
-
-func (m *orderModel) PageByTenant(ctx context.Context, tenantID string, page, pageSize int, query string, orders []dbcore.Order, args ...interface{}) ([]*Order, int64, error) {
-	if tenantID == "" {
-		return []*Order{}, 0, nil
-	}
-	query, args = injectTenant(tenantID, query, args)
-	return m.Page(ctx, page, pageSize, query, orders, args...)
-}
-
-// injectTenant 将 tenant_id 注入查询条件
-func injectTenant(tenantID string, query string, args []interface{}) (string, []interface{}) {
-	if query != "" {
-		return "tenant_id = ? AND (" + query + ")", append([]interface{}{tenantID}, args...)
-	}
-	return "tenant_id = ?", []interface{}{tenantID}
-}
+// 注意：多租户隔离已通过 dbcore.Config 全局配置实现。
+// 当 TenantEnabled=true 时，BaseModel.GetTxDB 会自动注入 tenant_id 条件，
+// 所有 CRUD 方法（List/Page/Find/Delete 等）均自动隔离，无需手动拼接。
+// 若项目不需要多租户，保持 TenantEnabled=false（默认值）即可。
 
 // ============================================================
 // 4. Service 层调用示例
@@ -234,7 +212,9 @@ func (s *OrderService) CompleteOrder(ctx context.Context, orderID string, actual
 }
 
 // ListPendingOrders 查询待确认订单（使用 QueryBuilder 构建复杂条件）
-func (s *OrderService) ListPendingOrders(ctx context.Context, tenantID string, platformID string, startTime, endTime int64) ([]*Order, error) {
+// 注意：多租户隔离由 BaseModel.GetTxDB 自动注入（从 ctx 提取 tenant_id），
+// 调用方只需确保 ctx 中携带了租户信息即可。
+func (s *OrderService) ListPendingOrders(ctx context.Context, platformID string, startTime, endTime int64) ([]*Order, error) {
 	qb := dbcore.NewQueryBuilder().
 		EqIfPositive("order_status", int(OrderStatusPending)).
 		Eq("platform_id", platformID).
@@ -247,20 +227,20 @@ func (s *OrderService) ListPendingOrders(ctx context.Context, tenantID string, p
 	// )
 
 	query, args := qb.Build()
-	return s.orderModel.ListByTenant(ctx, tenantID, query,
+	return s.orderModel.List(ctx, query,
 		[]dbcore.Order{{Field: "pickup_time", Desc: false}},
 		args...,
 	)
 }
 
 // PageOrders 分页查询订单
-func (s *OrderService) PageOrders(ctx context.Context, tenantID string, page, pageSize int, orderStatus OrderStatus, keyword string) ([]*Order, int64, error) {
+func (s *OrderService) PageOrders(ctx context.Context, page, pageSize int, orderStatus OrderStatus, keyword string) ([]*Order, int64, error) {
 	qb := dbcore.NewQueryBuilder().
 		EqIfPositive("order_status", int(orderStatus)).
 		Like("customer_name", keyword) // LIKE '%keyword%'，模糊搜索客户姓名
 
 	query, args := qb.Build()
-	return s.orderModel.PageByTenant(ctx, tenantID, page, pageSize, query,
+	return s.orderModel.Page(ctx, page, pageSize, query,
 		[]dbcore.Order{{Field: "create_at", Desc: true}},
 		args...,
 	)
@@ -321,13 +301,31 @@ func initDB() *gorm.DB {
 func main() {
     db := initDB()
 
+    // 配置 ID 生成器
+    dbcore.SetIDGenerator(dbcore.NewSnowflakeGenerator(1))
+
+    // 配置多租户（按需开启，不需要多租户时可跳过此步）
+    dbcore.SetConfig(dbcore.Config{
+        TenantEnabled: true,               // 开启多租户隔离
+        TenantField:   "tenant_id",        // 租户字段名（默认 tenant_id）
+        TenantStrict:  true,               // 严格模式：无租户信息时拒绝查询
+        TenantExtractor: func(ctx context.Context) string {
+            if tid, ok := ctx.Value("tenant_id").(string); ok {
+                return tid
+            }
+            return ""
+        },
+    })
+    // 不需要多租户时，不调用 SetConfig 或设置 TenantEnabled: false（默认值）
+
     // isMigrate: 开发环境 true，生产环境 false
     orderModel := NewOrderModel(db, os.Getenv("APP_ENV") != "production")
     tx          := dbcore.NewTransaction(db)
     orderSvc    := NewOrderService(orderModel, tx)
 
-    // 创建订单
-    err := orderSvc.CreateOrder(context.Background(), &Order{
+    // 创建订单（ctx 中携带租户信息，BaseModel 自动隔离）
+    ctx := context.WithValue(context.Background(), "tenant_id", "tenant_001")
+    err := orderSvc.CreateOrder(ctx, &Order{
         TenantID:        "tenant_001",
         PlatformID:      "platform_ctrip",
         PlatformOrderNo: "CTRIP_20240101_001",

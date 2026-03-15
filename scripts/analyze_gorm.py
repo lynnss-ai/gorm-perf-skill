@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-analyze_gorm.py — 静态分析 Go 代码中的 GORM 反模式（R1–R18）
+analyze_gorm.py — 静态分析 Go 代码中的 GORM 反模式（R1–R27）
 用法:
   python3 analyze_gorm.py <go_file>
   cat main.go | python3 analyze_gorm.py -
@@ -10,7 +10,8 @@ analyze_gorm.py — 静态分析 Go 代码中的 GORM 反模式（R1–R18）
 
 import sys
 import re
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, asdict
 from typing import List
 
 @dataclass
@@ -159,6 +160,56 @@ def check_per_line(lines: List[str]) -> List[Issue]:
                     '禁止物理外键约束。改为: gorm:"foreignKey:UserID;constraint:false"\n'
                     "   并在 gorm.Config 设置 DisableForeignKeyConstraintWhenMigrating: true"))
 
+        # ── R27: references tag 未加 constraint:false（物理外键变体）────────
+        if re.search(r'gorm:"[^"]*references:', s, re.IGNORECASE):
+            if "constraint:false" not in s.lower():
+                issues.append(Issue("ERROR", "PHYSICAL_FK_REFERENCES", i, s,
+                    '禁止物理外键约束。含 references: 的 tag 必须同时加 constraint:false\n'
+                    '   改为: gorm:"foreignKey:UserID;references:ID;constraint:false"'))
+
+        # ── R22: Where 字符串拼接（SQL 注入）──────────────────────────────────
+        if re.search(r'\.Where\s*\(', s):
+            if re.search(r'["\']\s*\+\s*\w|fmt\.Sprintf', s):
+                issues.append(Issue("ERROR", "WHERE_SQL_INJECTION", i, s,
+                    "Where 字符串拼接存在 SQL 注入风险。"
+                    "改用占位符: db.Where(\"name = ?\", name)"))
+
+        # ── R23: 未检查 RowsAffected ──────────────────────────────────────────
+        if re.search(r'\b(db|tx)\.(Update|Delete)\s*\(', s) and \
+           "Updates" not in s:
+            next_lines = "\n".join(lines[i:min(i+3, len(lines))])
+            if "RowsAffected" not in next_lines and "RowsAffected" not in s:
+                if not any(iss.rule == "UNCHECKED_ROWS_AFFECTED" for iss in issues):
+                    issues.append(Issue("INFO", "UNCHECKED_ROWS_AFFECTED", i, s,
+                        "Update/Delete 后建议检查 RowsAffected 确认影响行数，"
+                        "避免静默无效更新: result := db.Update(...); if result.RowsAffected == 0 { ... }"))
+
+        # ── R24: Save 可能导致全量更新 ────────────────────────────────────────
+        if re.search(r'\b(db|tx)\.Save\s*\(', s):
+            if not any(iss.rule == "SAVE_FULL_UPDATE" for iss in issues):
+                issues.append(Issue("INFO", "SAVE_FULL_UPDATE", i, s,
+                    "Save 会更新所有字段（含零值），性能差且可能意外覆盖数据。"
+                    "只更新特定字段用: db.Model(&v).Updates(map[string]any{\"field\": val})"))
+
+        # ── R25: AutoMigrate 在非初始化代码中使用 ──────────────────────────────
+        if re.search(r'\.AutoMigrate\s*\(', s):
+            if not re.search(r'func\s+(init|main|setup|Init|Setup|Migrate)\b',
+                             "\n".join(lines[max(0, i-20):i])):
+                issues.append(Issue("WARN", "AUTO_MIGRATE_IN_BUSINESS", i, s,
+                    "AutoMigrate 不应在业务代码中调用，仅在 init/main/setup 函数中使用。"
+                    "生产环境推荐 golang-migrate 管理 DDL"))
+
+        # ── R26: 大 IN 子句（超过 1000 个元素）──────────────────────────────────
+        if re.search(r'\.Where\s*\([^)]*\bIN\b', s, re.IGNORECASE):
+            # 检查紧邻的切片变量是否可能很大（无法静态确定大小，仅提醒）
+            if not any(iss.rule == "LARGE_IN_CLAUSE" for iss in issues):
+                # 检测显式大切片字面量或常见的 ids 变量
+                ctx_block = "\n".join(lines[max(0, i-5):i])
+                if re.search(r'(allIDs|allIds|ALL_IDS|ids\s*=\s*\w+\()', ctx_block):
+                    issues.append(Issue("WARN", "LARGE_IN_CLAUSE", i, s,
+                        "IN 子句元素过多会导致 SQL 过长或超过 max_allowed_packet。"
+                        "建议限制 IN 子句大小（≤1000），超限时分批查询或改用 JOIN 临时表"))
+
     # ── R19: *gorm.DB 跨 goroutine 共享（goroutine 不安全）────────────────
     for i, line in enumerate(lines, 1):
         s = line.strip()
@@ -265,15 +316,31 @@ def format_output(issues: List[Issue]) -> str:
     return "\n".join(out)
 
 
+def format_json(issues: List[Issue]) -> str:
+    return json.dumps([asdict(i) for i in issues], ensure_ascii=False, indent=2)
+
+
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] != "-":
-        with open(sys.argv[1], "r", encoding="utf-8") as f:
+    import argparse
+    parser = argparse.ArgumentParser(description="GORM 静态分析器")
+    parser.add_argument("file", nargs="?", default="-", help="Go 文件路径，- 表示 stdin")
+    parser.add_argument("--format", choices=["text", "json"], default="text",
+                        help="输出格式: text（默认）或 json（CI 集成用）")
+    args = parser.parse_args()
+
+    if args.file != "-":
+        with open(args.file, "r", encoding="utf-8") as f:
             code = f.read()
     else:
         code = sys.stdin.read()
 
     issues = analyze(code)
-    print(format_output(issues))
+
+    if args.format == "json":
+        print(format_json(issues))
+    else:
+        print(format_output(issues))
+
     sys.exit(1 if any(i.level == "ERROR" for i in issues) else 0)
 
 

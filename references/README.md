@@ -36,6 +36,15 @@
 
 ---
 
+## 🛡️ 数据安全与 ID 生成
+
+| 文件 | 内容摘要 | 触发时机 |
+|------|---------|---------|
+| [soft-delete.md](./soft-delete.md) | 软删除完整指南、唯一约束兼容、时间戳/flag 模式、归档清理 | 软删除、Unscoped、deleted_at 唯一约束 |
+| [id-generation.md](./id-generation.md) | Snowflake/Leaf-Segment/UUID 选型、时钟回拨保护、K8s nodeID、号段调优 | ID 生成策略、分布式 ID、自增 ID 迁移 |
+
+---
+
 ## 🧩 模式与扩展
 
 | 文件 | 内容摘要 | 触发时机 |
@@ -60,3 +69,7 @@
 **上生产迁移** → `migration.md` §3–§4
 
 **遇到 Session 条件累积** → `session.md` §3 + §8
+
+**软删除问题** → `soft-delete.md`（唯一约束、Preload、归档清理）
+
+**分布式 ID** → `id-generation.md`（Snowflake vs Leaf vs UUID 选型）
