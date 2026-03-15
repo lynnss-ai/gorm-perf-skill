@@ -1,8 +1,8 @@
 ---
 name: gorm-perf
 description: >
-  GORM 使用与性能优化专项技能。以下场景必须触发，不得跳过：
-  (1) 任何涉及 GORM 的代码审查、编写、调试；
+  GORM 使用与性能优化专项技能，覆盖以下场景：
+  (1) GORM 代码审查、编写、调试；
   (2) 数据库慢查询、N+1、全表扫描、索引失效等性能问题；
   (3) 连接池配置（SetMaxOpenConns 等）；
   (4) 批量插入/更新/查询优化；
@@ -12,7 +12,7 @@ description: >
   (8) 数据库迁移（golang-migrate、AutoMigrate、ALTER TABLE）；
   (9) GORM 单元测试（sqlmock、SQLite 内存库）；
   (10) Benchmark / pprof 性能分析代码生成。
-  即使用户只说"写个查询"、"数据库好慢"、"怎么加索引"、"帮我写个 struct"也应触发。
+  适用于用户提到"写个查询"、"数据库好慢"、"怎么加索引"、"帮我写个 struct"等场景。
 ---
 
 # GORM 使用与性能优化 Skill
