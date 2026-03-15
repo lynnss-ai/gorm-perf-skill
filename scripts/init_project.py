@@ -33,6 +33,11 @@ CORE_FILES = [
     "transaction.go",
 ]
 
+# 可选示例文件（--example 时复制）
+EXAMPLE_FILES = [
+    "example_order_model.go",
+]
+
 # 颜色输出
 GREEN  = "\033[92m"
 YELLOW = "\033[93m"
@@ -57,10 +62,10 @@ def replace_package(content: str, new_package: str) -> str:
     )
 
 
-def check_assets():
+def check_assets(with_example: bool = False):
     """检查 assets 目录是否完整"""
     missing = []
-    for fname in CORE_FILES:
+    for fname in CORE_FILES + (EXAMPLE_FILES if with_example else []):
         if not (ASSETS_DIR / fname).exists():
             missing.append(fname)
     if missing:
@@ -69,8 +74,8 @@ def check_assets():
         sys.exit(1)
 
 
-def scaffold(output_dir: Path, package_name: str, dry_run: bool, force: bool):
-    check_assets()
+def scaffold(output_dir: Path, package_name: str, dry_run: bool, force: bool, with_example: bool = False):
+    check_assets(with_example)
 
     if not dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -84,7 +89,7 @@ def scaffold(output_dir: Path, package_name: str, dry_run: bool, force: bool):
     written = []
     skipped = []
 
-    for fname in CORE_FILES:
+    for fname in CORE_FILES + (EXAMPLE_FILES if with_example else []):
         src = ASSETS_DIR / fname
         dst = output_dir / fname
 
@@ -164,6 +169,7 @@ def main():
   python3 scripts/init_project.py --output ./pkg/dbcore --package mydbcore
   python3 scripts/init_project.py --output ./common/dbcore --dry-run
   python3 scripts/init_project.py --output ./internal/dbcore --force
+  python3 scripts/init_project.py --output ./internal/dbcore --example  # 含示例文件
         """
     )
     parser.add_argument(
@@ -186,6 +192,11 @@ def main():
         action="store_true",
         help="强制覆盖已存在的文件"
     )
+    parser.add_argument(
+        "--example",
+        action="store_true",
+        help="同时生成示例文件 example_order_model.go（展示完整用法）"
+    )
 
     args = parser.parse_args()
 
@@ -199,6 +210,7 @@ def main():
         package_name=args.package,
         dry_run=args.dry_run,
         force=args.force,
+        with_example=args.example,
     )
 
 
