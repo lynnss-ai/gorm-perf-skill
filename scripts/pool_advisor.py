@@ -156,6 +156,47 @@ go func() {
     return code
 
 
+
+def render_health_check(result: dict) -> str:
+    """生成连接池健康检查代码模板"""
+    return f"""
+// ── 连接池健康检查（自动生成）──────────────────────────────────────
+// 建议将以下代码集成到 /health 端点和定时监控任务中
+
+func DBHealthCheck(db *gorm.DB) error {{
+\tsqlDB, err := db.DB()
+\tif err != nil {{
+\t\treturn fmt.Errorf("get sql.DB failed: %w", err)
+\t}}
+\tctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+\tdefer cancel()
+\treturn sqlDB.PingContext(ctx)
+}}
+
+// 定时打印连接池指标（建议每 30s 执行一次）
+func StartPoolMonitor(db *gorm.DB, interval time.Duration) {{
+\tgo func() {{
+\t\tticker := time.NewTicker(interval)
+\t\tfor range ticker.C {{
+\t\t\tsqlDB, _ := db.DB()
+\t\t\tstats := sqlDB.Stats()
+\t\t\t// 连接池使用率告警阈值: {int(result['max_open'] * 0.9)} ({{}:.0%} of MaxOpen={result['max_open']})
+\t\t\tif stats.InUse >= {int(result['max_open'] * 0.9)} {{
+\t\t\t\tlog.Warn("db pool near exhaustion",
+\t\t\t\t\t"in_use", stats.InUse, "max_open", {result['max_open']})
+\t\t\t}}
+\t\t\tlog.Debug("db pool stats",
+\t\t\t\t"open", stats.OpenConnections,
+\t\t\t\t"in_use", stats.InUse,
+\t\t\t\t"idle", stats.Idle,
+\t\t\t\t"wait_count", stats.WaitCount,
+\t\t\t\t"wait_duration", stats.WaitDuration,
+\t\t\t)
+\t\t}}
+\t}}()
+}}
+"""
+
 def main():
     parser = argparse.ArgumentParser(description="GORM 连接池参数顾问")
     parser.add_argument("--qps", type=float, required=True, help="目标 QPS（数据库操作次数/秒）")
@@ -188,6 +229,7 @@ def main():
     )
 
     print(render_go_code(result, args))
+    print(render_health_check(result))
 
     # 打印摘要表
     print("// ── 参数摘要 ───────────────────────────────────────────────")

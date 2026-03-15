@@ -1,254 +1,212 @@
 #!/usr/bin/env python3
 """
-analyze_gorm.py — 静态分析 Go 代码中的 GORM 反模式
-用法: python3 analyze_gorm.py <go_file_or_stdin>
+analyze_gorm.py — 静态分析 Go 代码中的 GORM 反模式（R1–R18）
+用法:
+  python3 analyze_gorm.py <go_file>
+  cat main.go | python3 analyze_gorm.py -
 
-输出: 只打印命中的问题，没有问题则输出 "✅ 未发现明显反模式"
+退出码: 有 ERROR 级别问题时返回 1，方便 CI 集成
 """
 
 import sys
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
 @dataclass
 class Issue:
-    level: str          # ERROR / WARN / INFO
+    level: str      # ERROR / WARN / INFO
     rule: str
-    line: int
+    line: int       # 0 = 文件级别（非行级）
     snippet: str
     suggestion: str
 
-def analyze(code: str) -> List[Issue]:
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 逐行规则（R1–R10, R13, R14, R16, R17, R18a）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def check_per_line(lines: List[str]) -> List[Issue]:
     issues: List[Issue] = []
-    lines = code.splitlines()
+    in_tx_block = False
+    tx_indent = 0
 
     for i, line in enumerate(lines, 1):
-        stripped = line.strip()
+        s = line.strip()
 
-        # ── R1: SELECT * (Find without Select) ──────────────────────────────
-        if re.search(r'\.(Find|First|Last|Take)\s*\(', stripped) and \
-           not re.search(r'\.Select\s*\(', stripped) and \
-           not re.search(r'\.Raw\s*\(', stripped):
-            # 排除已经有 Select 在前几行的链式调用
-            context = "\n".join(lines[max(0,i-4):i])
-            if ".Select(" not in context:
-                issues.append(Issue(
-                    level="WARN", rule="SELECT_STAR",
-                    line=i, snippet=stripped,
-                    suggestion="添加 .Select(\"id\",\"name\",...) 只查需要字段，减少数据传输和内存分配"
-                ))
+        # ── R1: SELECT *（Find 未指定字段）─────────────────────────────────
+        if re.search(r'\.(Find|First|Last|Take)\s*\(', s) and \
+           not re.search(r'\.Select\s*\(', s) and \
+           not re.search(r'\.Raw\s*\(', s):
+            ctx = "\n".join(lines[max(0, i-4):i])
+            if ".Select(" not in ctx:
+                issues.append(Issue("WARN", "SELECT_STAR", i, s,
+                    "添加 .Select(\"id\",\"name\",...) 只查需要字段，减少数据传输和内存分配"))
 
         # ── R2: OFFSET 大分页 ────────────────────────────────────────────────
-        m = re.search(r'\.Offset\s*\(\s*(\w+)', stripped)
+        m = re.search(r'\.Offset\s*\(\s*(\w+)', s)
         if m:
             val = m.group(1)
-            # 如果是字面量且 > 1000，或者是变量（可能很大）
             if val.isdigit() and int(val) > 1000:
-                issues.append(Issue(
-                    level="ERROR", rule="LARGE_OFFSET",
-                    line=i, snippet=stripped,
-                    suggestion=f"Offset({val}) 会导致全表扫描前 N 行，改用游标分页: WHERE id > lastID ORDER BY id LIMIT n"
-                ))
+                issues.append(Issue("ERROR", "LARGE_OFFSET", i, s,
+                    f"Offset({val}) 导致全表扫描前 N 行，改用游标分页: WHERE id > lastID ORDER BY id LIMIT n"))
             elif not val.isdigit():
-                issues.append(Issue(
-                    level="WARN", rule="DYNAMIC_OFFSET",
-                    line=i, snippet=stripped,
-                    suggestion="动态 Offset 在大表上性能急剧下降，建议改为游标分页（WHERE id > lastID）"
-                ))
+                issues.append(Issue("WARN", "DYNAMIC_OFFSET", i, s,
+                    "动态 Offset 在大表上性能急剧下降，建议改为游标分页（WHERE id > lastID）"))
 
-        # ── R3: 循环内 DB 操作（N+1） ────────────────────────────────────────
-        if re.search(r'for\s+.+range\s+', stripped):
-            # 往后几行找 db. 操作
+        # ── R3: 循环内 DB 操作（N+1）────────────────────────────────────────
+        if re.search(r'for\s+.+range\s+', s):
             window = lines[i:min(i+8, len(lines))]
-            for j, wline in enumerate(window):
-                if re.search(r'\b(db|tx)\.(Find|First|Create|Save|Update|Delete)\b', wline):
-                    issues.append(Issue(
-                        level="ERROR", rule="N_PLUS_1",
-                        line=i+j+1, snippet=wline.strip(),
-                        suggestion="循环内 DB 操作 = N+1 查询。改用 Preload / Joins 批量加载，或先收集 ID 再 WHERE id IN (?)"
-                    ))
-                    break  # 每个 for 只报一次
+            for j, wl in enumerate(window):
+                if re.search(r'\b(db|tx)\.(Find|First|Create|Save|Update|Delete)\b', wl):
+                    issues.append(Issue("ERROR", "N_PLUS_1", i+j+1, wl.strip(),
+                        "循环内 DB 操作 = N+1 查询。改用 Preload / Joins 批量加载，"
+                        "或先收集 ID 再 WHERE id IN (?)"))
+                    break
 
-        # ── R4: struct Updates（零值丢失） ───────────────────────────────────
-        if re.search(r'\.Updates\s*\(\s*\w+\s*\{', stripped):
-            issues.append(Issue(
-                level="WARN", rule="STRUCT_UPDATES_ZERO_VALUE",
-                line=i, snippet=stripped,
-                suggestion="Updates(struct{}) 会忽略零值字段（int=0, bool=false, string=\"\"）。"
-                           "改用 Updates(map[string]any{\"field\": value}) 确保零值也能更新"
-            ))
+        # ── R4: struct Updates（零值丢失）───────────────────────────────────
+        if re.search(r'\.Updates\s*\(\s*\w+\s*\{', s):
+            issues.append(Issue("WARN", "STRUCT_UPDATES_ZERO_VALUE", i, s,
+                "Updates(struct{}) 忽略零值字段（int=0, bool=false）。"
+                "改用 Updates(map[string]any{\"field\": value})"))
 
         # ── R5: 未带 WithContext ─────────────────────────────────────────────
-        if re.search(r'\b(db)\.(Find|First|Create|Update|Delete|Exec|Raw)\b', stripped) and \
-           "WithContext" not in stripped and ".Session(" not in stripped:
-            # 只报一次
+        if re.search(r'\b(db)\.(Find|First|Create|Update|Delete|Exec|Raw)\b', s) and \
+           "WithContext" not in s and ".Session(" not in s:
             if not any(iss.rule == "NO_CONTEXT" for iss in issues):
-                issues.append(Issue(
-                    level="INFO", rule="NO_CONTEXT",
-                    line=i, snippet=stripped,
-                    suggestion="建议所有 DB 操作传入 ctx: db.WithContext(ctx).Find(...)，支持超时取消和链路追踪"
-                ))
+                issues.append(Issue("INFO", "NO_CONTEXT", i, s,
+                    "建议所有 DB 操作传入 ctx: db.WithContext(ctx).Find(...)，支持超时取消和链路追踪"))
 
         # ── R6: 未检查 Error ─────────────────────────────────────────────────
-        if re.search(r'\b(db|tx)\.(Find|First|Create|Save|Update|Delete|Exec)\b.*\)', stripped):
-            # 检查本行或下一行是否有 .Error / err :=
+        if re.search(r'\b(db|tx)\.(Find|First|Create|Save|Update|Delete|Exec)\b.*\)', s):
             next_line = lines[i].strip() if i < len(lines) else ""
-            if ".Error" not in stripped and "err" not in stripped.lower() \
+            if ".Error" not in s and "err" not in s.lower() \
                and ".Error" not in next_line and "err" not in next_line.lower():
-                issues.append(Issue(
-                    level="WARN", rule="UNCHECKED_ERROR",
-                    line=i, snippet=stripped,
-                    suggestion="未检查 DB 错误。应: if err := db.WithContext(ctx).Find(&u).Error; err != nil { ... }"
-                ))
+                issues.append(Issue("WARN", "UNCHECKED_ERROR", i, s,
+                    "未检查 DB 错误。应: if err := db.WithContext(ctx).Find(&u).Error; err != nil { ... }"))
 
-        # ── R7: Find 全表（无 Where 条件） ──────────────────────────────────
-        if re.search(r'\.(Find)\s*\(&\w+\)\s*$', stripped) and \
-           "Where" not in stripped:
-            context = "\n".join(lines[max(0,i-5):i])
-            if ".Where(" not in context and ".Limit(" not in context:
-                issues.append(Issue(
-                    level="WARN", rule="FIND_ALL_NO_LIMIT",
-                    line=i, snippet=stripped,
-                    suggestion="Find 无 Where/Limit 会全表扫描。确认是否需要加条件或 Limit，大表请用 FindInBatches"
-                ))
+        # ── R7: Find 全表（无 Where/Limit）──────────────────────────────────
+        if re.search(r'\.(Find)\s*\(&\w+\)\s*$', s) and "Where" not in s:
+            ctx = "\n".join(lines[max(0, i-5):i])
+            if ".Where(" not in ctx and ".Limit(" not in ctx:
+                issues.append(Issue("WARN", "FIND_ALL_NO_LIMIT", i, s,
+                    "Find 无 Where/Limit 会全表扫描。大表请用 FindInBatches"))
 
-        # ── R8: 事务内有 HTTP/Sleep 等耗时操作 ──────────────────────────────
-        if re.search(r'db\.Transaction\(|db\.Begin\(\)', stripped):
-            # 检查 transaction block 内是否有 http. / time.Sleep / rpc
-            block_end = min(i + 30, len(lines))
-            block = "\n".join(lines[i:block_end])
-            for pattern, name in [
+        # ── R8: 事务内耗时 IO 操作 ───────────────────────────────────────────
+        if re.search(r'db\.(Transaction|Begin)\(', s):
+            block = "\n".join(lines[i:min(i+30, len(lines))])
+            for pat, name in [
                 (r'http\.(Get|Post|Do)\(', "HTTP 请求"),
                 (r'time\.Sleep\(', "time.Sleep"),
                 (r'grpc\.|\.Invoke\(', "gRPC 调用"),
-                (r'redis\.|\.Set\(|\.Get\(', "Redis 操作（非必要时移出事务）"),
             ]:
-                if re.search(pattern, block):
-                    issues.append(Issue(
-                        level="ERROR", rule="SLOW_OP_IN_TX",
-                        line=i, snippet=stripped,
-                        suggestion=f"事务内发现 {name}，会长时间持有 DB 连接/锁，"
-                                   "应将 IO 操作移到事务外，事务内只做 DB 操作"
-                    ))
+                if re.search(pat, block):
+                    issues.append(Issue("ERROR", "SLOW_OP_IN_TX", i, s,
+                        f"事务内发现 {name}，长时间持有 DB 连接/锁。IO 操作应移到事务外"))
                     break
 
-        # ── R9: Like '%xxx%' 前后通配 ───────────────────────────────────────
-        if re.search(r'LIKE\s+["\']%[^%]+%["\']', stripped, re.IGNORECASE) or \
-           re.search(r'like.*"%.*%"', stripped):
-            issues.append(Issue(
-                level="WARN", rule="LEADING_WILDCARD_LIKE",
-                line=i, snippet=stripped,
-                suggestion="'%keyword%' 前导通配符无法走索引，触发全表扫描。"
-                           "优先使用 'keyword%' 前缀匹配，或改用全文索引 MATCH AGAINST"
-            ))
+        # ── R9: LIKE '%xxx%' 前导通配 ────────────────────────────────────────
+        if re.search(r'LIKE\s+["\']%[^%]+%["\']', s, re.IGNORECASE):
+            issues.append(Issue("WARN", "LEADING_WILDCARD_LIKE", i, s,
+                "'%keyword%' 无法走索引，触发全表扫描。"
+                "用前缀匹配 'keyword%' 或全文索引 MATCH AGAINST"))
 
-        # ── R10: CreateInBatches / 批量 Create 缺失 ─────────────────────────
-        if re.search(r'for\s+.+range\s+', stripped):
+        # ── R10: 循环内逐条 Create ────────────────────────────────────────────
+        if re.search(r'for\s+.+range\s+', s):
             window = lines[i:min(i+5, len(lines))]
-            for wline in window:
-                if re.search(r'\.(Create)\s*\(', wline) and "Batches" not in wline:
-                    issues.append(Issue(
-                        level="ERROR", rule="LOOP_CREATE",
-                        line=i, snippet=wline.strip(),
-                        suggestion="循环内逐条 Create = N 次 INSERT Round-trip。"
-                                   "改用 db.CreateInBatches(&slice, 200) 批量插入"
-                    ))
+            for wl in window:
+                if re.search(r'\.(Create)\s*\(', wl) and "Batches" not in wl:
+                    issues.append(Issue("ERROR", "LOOP_CREATE", i, wl.strip(),
+                        "循环内逐条 Create = N 次 INSERT。改用 db.CreateInBatches(&slice, 200)"))
                     break
 
-    # ── R11: 缺少 PrepareStmt 配置 ──────────────────────────────────────────
-    full_code = code
-    if "gorm.Open(" in full_code and "PrepareStmt" not in full_code:
-        issues.append(Issue(
-            level="INFO", rule="MISSING_PREPARE_STMT",
-            line=0, snippet="gorm.Open(...)",
-            suggestion="建议在 gorm.Config{} 中开启 PrepareStmt: true，SQL 编译结果可复用，高并发场景提升明显"
-        ))
+        # ── R13: Raw/Exec 字符串拼接（SQL 注入）─────────────────────────────
+        if re.search(r'\.(Raw|Exec)\s*\(', s):
+            if re.search(r'["\']\s*\+\s*\w|fmt\.Sprintf', s):
+                issues.append(Issue("ERROR", "SQL_INJECTION_RISK", i, s,
+                    "Raw/Exec 字符串拼接存在 SQL 注入风险。"
+                    "改用占位符: db.Raw(\"SELECT * FROM t WHERE id = ?\", id)"))
 
-    # ── R12: 未使用 SkipDefaultTransaction ──────────────────────────────────
-    if "gorm.Open(" in full_code and "SkipDefaultTransaction" not in full_code:
-        issues.append(Issue(
-            level="INFO", rule="MISSING_SKIP_DEFAULT_TX",
-            line=0, snippet="gorm.Open(...)",
-            suggestion="写操作不需要隐式事务时，设置 SkipDefaultTransaction: true 可提升写性能约 30%"
-        ))
+        # ── R14: Pluck 多列误用 ──────────────────────────────────────────────
+        if re.search(r'\.Pluck\s*\(\s*["\']\w+,\s*\w+', s):
+            issues.append(Issue("WARN", "PLUCK_MULTI_COLUMN", i, s,
+                "Pluck 只支持单列。提取多列改用 .Select(\"col1,col2\").Scan(&result)"))
 
-    # ── R13: 硬编码 SQL（Raw SQL 注入风险） ─────────────────────────────────
-    for i, line in enumerate(lines, 1):
-        stripped = line.strip()
-        # Raw/Exec 中直接拼接字符串（+ 或 fmt.Sprintf）
-        if re.search(r'\.(Raw|Exec)\s*\(', stripped):
-            if re.search(r'["\']\s*\+\s*\w|fmt\.Sprintf', stripped):
-                issues.append(Issue(
-                    level="ERROR", rule="SQL_INJECTION_RISK",
-                    line=i, snippet=stripped,
-                    suggestion="Raw/Exec 中字符串拼接存在 SQL 注入风险。改用占位符: db.Raw(\"SELECT * FROM t WHERE id = ?\", id)"
-                ))
+        # ── R16: 软删除 Delete 未用 Unscoped ────────────────────────────────
+        if re.search(r'\.(Delete)\s*\(', s) and "Unscoped" not in s:
+            if not any(iss.rule == "SOFT_DELETE_REMINDER" for iss in issues):
+                issues.append(Issue("INFO", "SOFT_DELETE_REMINDER", i, s,
+                    "含 DeletedAt 的 Model Delete 只做软删除。硬删除用 db.Unscoped().Delete(&model)"))
 
-    # ── R14: Pluck 误用（应该用 Select + Scan） ──────────────────────────────
-    for i, line in enumerate(lines, 1):
-        stripped = line.strip()
-        if re.search(r'\.Pluck\s*\(\s*["\'].*["\'],\s*&\w+\)', stripped):
-            # 检查是否提取多列（Pluck 只支持单列）
-            if re.search(r'\.Pluck\s*\(\s*["\']\w+,\s*\w+', stripped):
-                issues.append(Issue(
-                    level="WARN", rule="PLUCK_MULTI_COLUMN",
-                    line=i, snippet=stripped,
-                    suggestion="Pluck 只支持单列提取。提取多列应改用 .Select(\"col1,col2\").Scan(&result)"
-                ))
-
-    # ── R15: 未设置连接池 ────────────────────────────────────────────────────
-    if "gorm.Open(" in full_code and "SetMaxOpenConns" not in full_code:
-        issues.append(Issue(
-            level="WARN", rule="MISSING_POOL_CONFIG",
-            line=0, snippet="sqlDB.SetMaxOpenConns(...)",
-            suggestion="未配置连接池。生产环境必须设置 SetMaxOpenConns / SetMaxIdleConns / SetConnMaxLifetime，"
-                       "否则默认无上限可能耗尽 DB 连接"
-        ))
-
-    # ── R16: 使用 DeletedAt 但未开启软删除提醒 ──────────────────────────────
-    if "DeletedAt" in full_code and "Unscoped()" not in full_code:
-        # 检查是否有直接 DELETE 操作（可能误以为是硬删除）
-        for i, line in enumerate(lines, 1):
-            stripped = line.strip()
-            if re.search(r'\.(Delete)\s*\(', stripped) and "Unscoped" not in stripped:
-                issues.append(Issue(
-                    level="INFO", rule="SOFT_DELETE_REMINDER",
-                    line=i, snippet=stripped,
-                    suggestion="Model 含 DeletedAt 字段，Delete 只设置时间戳（软删除），不会真正删除记录。"
-                               "如需硬删除请用 db.Unscoped().Delete(&model)"
-                ))
-                break
-
-    # ── R17: 事务内使用 db 而非 tx（事务不生效） ────────────────────────────
-    in_tx_block = False
-    tx_indent = 0
-    for i, line in enumerate(lines, 1):
-        stripped = line.strip()
-        # 检测进入事务块
-        if re.search(r'db\.(Transaction|Begin)\(', stripped):
+        # ── R17: 事务块内使用 db 而非 tx ─────────────────────────────────────
+        if re.search(r'db\.(Transaction|Begin)\(', s):
             in_tx_block = True
             tx_indent = len(line) - len(line.lstrip())
-            continue
-        if in_tx_block:
-            current_indent = len(line) - len(line.lstrip())
-            # 事务块结束（缩进回退到事务声明层级）
-            if stripped and current_indent <= tx_indent and re.search(r'^[})]', stripped):
+        elif in_tx_block:
+            cur_indent = len(line) - len(line.lstrip())
+            if s and cur_indent <= tx_indent and re.search(r'^[})]', s):
                 in_tx_block = False
-                continue
-            # 在事务块内发现直接使用 db. 而非 tx.
-            if re.search(r'\bdb\.(Find|First|Create|Save|Update|Delete|Exec|Raw)\b', stripped):
-                issues.append(Issue(
-                    level="ERROR", rule="DB_IN_TX_BLOCK",
-                    line=i, snippet=stripped,
-                    suggestion="事务块内使用了全局 db 而非事务对象 tx，该操作不在事务内！改用 tx.Create(...) / tx.Find(...)"
-                ))
-                break
+            elif re.search(r'\bdb\.(Find|First|Create|Save|Update|Delete|Exec|Raw)\b', s):
+                if not any(iss.rule == "DB_IN_TX_BLOCK" for iss in issues):
+                    issues.append(Issue("ERROR", "DB_IN_TX_BLOCK", i, s,
+                        "事务块内使用全局 db 而非 tx，该操作不在事务内！"
+                        "改用 tx.Create(...) / tx.Find(...)"))
 
-    # 去重（同 rule 只保留第一个）
-    seen = set()
-    deduped = []
-    for iss in issues:
+        # ── R18a: foreignKey tag 未加 constraint:false ───────────────────────
+        if re.search(r'gorm:"[^"]*foreignKey:', s, re.IGNORECASE):
+            if "constraint:false" not in s.lower():
+                issues.append(Issue("ERROR", "PHYSICAL_FOREIGN_KEY", i, s,
+                    '禁止物理外键约束。改为: gorm:"foreignKey:UserID;constraint:false"\n'
+                    "   并在 gorm.Config 设置 DisableForeignKeyConstraintWhenMigrating: true"))
+
+    return issues
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 全文件级规则（R11, R12, R15, R18b）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def check_full_file(code: str) -> List[Issue]:
+    issues: List[Issue] = []
+    has_open = "gorm.Open(" in code
+
+    # ── R11: 缺少 PrepareStmt ────────────────────────────────────────────────
+    if has_open and "PrepareStmt" not in code:
+        issues.append(Issue("INFO", "MISSING_PREPARE_STMT", 0, "gorm.Config{}",
+            "建议开启 PrepareStmt: true，SQL 编译结果可复用，高并发场景性能提升明显"))
+
+    # ── R12: 缺少 SkipDefaultTransaction ────────────────────────────────────
+    if has_open and "SkipDefaultTransaction" not in code:
+        issues.append(Issue("INFO", "MISSING_SKIP_DEFAULT_TX", 0, "gorm.Config{}",
+            "写操作无需隐式事务时，设置 SkipDefaultTransaction: true 可提升写性能约 30%"))
+
+    # ── R15: 未设置连接池 ────────────────────────────────────────────────────
+    if has_open and "SetMaxOpenConns" not in code:
+        issues.append(Issue("WARN", "MISSING_POOL_CONFIG", 0, "sqlDB.SetMaxOpenConns(...)",
+            "生产环境必须设置 SetMaxOpenConns / SetMaxIdleConns / SetConnMaxLifetime，"
+            "否则默认无上限可能耗尽 DB 连接"))
+
+    # ── R18b: AutoMigrate 未禁用物理 FK ──────────────────────────────────────
+    if has_open and "DisableForeignKeyConstraintWhenMigrating" not in code:
+        issues.append(Issue("WARN", "FK_MIGRATION_NOT_DISABLED", 0, "gorm.Config{}",
+            "建议设置 DisableForeignKeyConstraintWhenMigrating: true，"
+            "防止 AutoMigrate 自动创建物理外键约束"))
+
+    return issues
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 主入口
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def analyze(code: str) -> List[Issue]:
+    lines = code.splitlines()
+    all_issues = check_per_line(lines) + check_full_file(code)
+
+    # 去重：同 rule 只保留行号最小的那条
+    seen: set = set()
+    deduped: List[Issue] = []
+    for iss in sorted(all_issues, key=lambda x: x.line):
         if iss.rule not in seen:
             seen.add(iss.rule)
             deduped.append(iss)
@@ -259,15 +217,15 @@ def format_output(issues: List[Issue]) -> str:
     if not issues:
         return "✅ 未发现明显 GORM 反模式\n"
 
-    level_icon = {"ERROR": "🔴", "WARN": "🟡", "INFO": "🔵"}
-    lines = [f"发现 {len(issues)} 个问题：\n"]
+    icon = {"ERROR": "🔴", "WARN": "🟡", "INFO": "🔵"}
+    out = [f"发现 {len(issues)} 个问题：\n"]
     for iss in issues:
-        icon = level_icon.get(iss.level, "⚪")
-        lines.append(f"{icon} [{iss.level}] {iss.rule}  (第 {iss.line} 行)")
-        lines.append(f"   代码: {iss.snippet[:120]}")
-        lines.append(f"   建议: {iss.suggestion}")
-        lines.append("")
-    return "\n".join(lines)
+        loc = f"第 {iss.line} 行" if iss.line > 0 else "文件级"
+        out.append(f"{icon.get(iss.level, '⚪')} [{iss.level}] {iss.rule}  ({loc})")
+        out.append(f"   代码: {iss.snippet[:120]}")
+        out.append(f"   建议: {iss.suggestion}")
+        out.append("")
+    return "\n".join(out)
 
 
 def main():
@@ -279,9 +237,7 @@ def main():
 
     issues = analyze(code)
     print(format_output(issues))
-    # 退出码：有 ERROR 级别返回 1，方便 CI 集成
-    if any(i.level == "ERROR" for i in issues):
-        sys.exit(1)
+    sys.exit(1 if any(i.level == "ERROR" for i in issues) else 0)
 
 
 if __name__ == "__main__":

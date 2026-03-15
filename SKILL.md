@@ -1,6 +1,6 @@
 ---
 name: gorm-perf
-version: 1.0.2
+version: 1.1.1
 description: >
   GORM 使用与性能优化专项技能，覆盖以下场景：
   (1) GORM 代码审查、编写、调试；
@@ -14,9 +14,12 @@ description: >
   (9) GORM 单元测试（sqlmock、SQLite 内存库）；
   (10) Benchmark / pprof 性能分析代码生成；
   (11) 分库分表（Sharding）配置与分片键设计；
-  (12) 监控与可观测性（Prometheus 指标、慢查询告警、OpenTelemetry 链路追踪）。
+  (12) 监控与可观测性（Prometheus 指标、慢查询告警、OpenTelemetry 链路追踪）；
+  (13) Scopes 可复用查询条件与多租户行级隔离；
+  (14) Redis Cache-Aside 缓存集成（防击穿、防雪崩、缓存一致性）。
   适用于用户提到"写个查询"、"数据库好慢"、"怎么加索引"、"帮我写个 struct"、
-  "分库分表怎么配"、"GORM 怎么接 Prometheus"、"链路追踪"等场景。
+  "分库分表怎么配"、"GORM 怎么接 Prometheus"、"链路追踪"、
+  "怎么写 Scope"、"多租户怎么隔离"、"GORM 怎么加缓存"等场景。
 ---
 
 # GORM 使用与性能优化 Skill
@@ -34,6 +37,8 @@ description: >
 | 用户提供 SQL，问性能/索引问题 | `scripts/query_explain.py` | `python3 scripts/query_explain.py "SELECT * FROM ..."` |
 | 用户修改了 struct，问如何生成迁移 SQL | `scripts/migration_gen.py` | `python3 scripts/migration_gen.py old.go new.go --table users` |
 | 用户需要 benchmark / pprof 代码 | `scripts/bench_template.py` | `python3 scripts/bench_template.py --func "Fn(db *gorm.DB, id uint)" 或 --scenario bulk_insert` |
+| 用户粘贴 struct，问如何生成 Scope 函数 | `scripts/scope_gen.py` | `python3 scripts/scope_gen.py model.go --tenant --paginate` |
+| 用户使用 PostgreSQL，需要生成 struct | `scripts/gen_model.py` | `python3 scripts/gen_model.py schema.sql --dialect pg` |
 
 ---
 
@@ -263,13 +268,59 @@ db.Clauses(dbresolver.Write).Find(&user)
 
 ---
 
-## 6. Model 设计规范
+## 6. Scopes 与多租户
+
+### 6.1 可复用查询条件（Scopes）
+
+```go
+// 定义 Scope：签名固定为 func(*gorm.DB) *gorm.DB
+func ActiveUser(db *gorm.DB) *gorm.DB {
+    return db.Where("status = ?", "active")
+}
+
+func AgeOver(age int) func(*gorm.DB) *gorm.DB {
+    return func(db *gorm.DB) *gorm.DB {
+        return db.Where("age > ?", age)
+    }
+}
+
+// 组合使用
+db.Scopes(ActiveUser, AgeOver(18)).Order("created_at DESC").Find(&users)
+```
+
+> **自动生成 Scope**：`python3 scripts/scope_gen.py model.go --tenant --paginate`
+
+### 6.2 多租户行级隔离
+
+```go
+// 从 context 提取 tenant_id，注入所有查询
+func TenantScope(ctx context.Context) func(*gorm.DB) *gorm.DB {
+    return func(db *gorm.DB) *gorm.DB {
+        tenantID, ok := ctx.Value("tenant_id").(uint)
+        if !ok || tenantID == 0 {
+            return db.Where("1 = 0") // 无租户信息时拒绝访问
+        }
+        return db.Where("tenant_id = ?", tenantID)
+    }
+}
+
+// Service 层统一使用
+db.WithContext(ctx).Scopes(TenantScope(ctx)).Find(&orders)
+```
+
+> 完整示例（分页 Scope、软删除 Scope、版本号 Scope）见 `references/scopes.md`
+
+---
+
+## 7. Model 设计规范
+
+### 7.1 基础 Model
 
 ```go
 // 嵌入 gorm.Model 获取 ID/CreatedAt/UpdatedAt/DeletedAt（软删除）
 type Order struct {
     gorm.Model
-    UserID uint   `gorm:"not null;index"`       // 外键加索引
+    UserID uint   `gorm:"not null;index"`        // 逻辑外键：只加索引，不加 CONSTRAINT
     Status string `gorm:"type:varchar(20);index"` // 状态字段加索引
     Amount int64  `gorm:"not null;default:0"`
 }
@@ -286,9 +337,78 @@ type Log struct {
 // 彻底删除：db.Unscoped().Delete(&user)
 ```
 
+### 7.2 ❌ 禁止使用物理外键（Foreign Key Constraint）
+
+> **团队规范**：禁止在数据库层面创建 `FOREIGN KEY CONSTRAINT`，一律采用**逻辑外键（应用层约束）**。
+
+**物理外键的问题：**
+
+| 问题 | 说明 |
+|------|------|
+| 分库分表不兼容 | 跨分片的 FK 约束无法建立，迁移到 Sharding 时必须删除 |
+| 级联操作不可控 | `ON DELETE CASCADE` 可能引发意外批量删除，难以追踪 |
+| 性能开销 | 每次写操作都触发 FK 校验，高并发场景下成为瓶颈 |
+| 导入/迁移困难 | 大批量数据导入必须严格按依赖顺序执行，运维复杂 |
+| 微服务不友好 | 跨服务数据无法建立 DB 级别约束 |
+
+**GORM 中禁止物理外键的写法：**
+
+```go
+// ❌ 错误：会在 AutoMigrate 时创建 FOREIGN KEY CONSTRAINT
+type Order struct {
+    gorm.Model
+    UserID uint
+    User   User `gorm:"foreignKey:UserID"`  // 会触发建 FK
+}
+
+// ✅ 正确：只建索引，不建 FK 约束
+type Order struct {
+    gorm.Model
+    UserID uint `gorm:"not null;index"` // 逻辑外键，仅索引
+    // 不声明 User 关联字段，或使用 constraint:false 禁止建约束
+}
+
+// ✅ 如果必须保留关联查询，显式禁止创建约束
+type Order struct {
+    gorm.Model
+    UserID uint `gorm:"not null;index"`
+    User   User `gorm:"foreignKey:UserID;constraint:false"` // 禁止建 FK
+}
+```
+
+**AutoMigrate 全局禁止 FK：**
+
+```go
+// 如果使用 AutoMigrate，禁用所有 FK 创建
+db.DisableForeignKeyConstraintWhenMigrating = true
+
+// 或在 gorm.Config 中配置
+db, _ := gorm.Open(mysql.Open(dsn), &gorm.Config{
+    DisableForeignKeyConstraintWhenMigrating: true, // 全局禁止 FK 约束
+})
+```
+
+**应用层约束替代方案：**
+
+```go
+// 写入时在 Service 层校验引用完整性
+func (s *OrderService) CreateOrder(ctx context.Context, order *Order) error {
+    // 应用层校验 user 存在
+    var count int64
+    if err := s.db.WithContext(ctx).Model(&User{}).
+        Where("id = ?", order.UserID).Count(&count).Error; err != nil {
+        return err
+    }
+    if count == 0 {
+        return ErrUserNotFound
+    }
+    return s.db.WithContext(ctx).Create(order).Error
+}
+```
+
 ---
 
-## 7. 调试与性能分析
+## 8. 调试与性能分析
 
 ```go
 // 单次查询打印 SQL
@@ -318,7 +438,7 @@ fmt.Println(stmt.Vars)         // 打印参数
 
 ---
 
-## 8. 常见坑与反模式
+## 9. 常见坑与反模式
 
 | 问题 | 错误写法 | 正确做法 |
 |------|----------|----------|
@@ -328,11 +448,58 @@ fmt.Println(stmt.Vars)         // 打印参数
 | 未用索引的 Like | `WHERE name LIKE '%foo%'` | 前缀匹配 `LIKE 'foo%'` 或全文索引 |
 | 事务内做耗时操作 | 事务 + HTTP 调用 | 事务只包 DB 操作，HTTP 调用放事务外 |
 | 未检查 Error | `db.Find(&u); use u` | `if err := db.Find(&u).Error; err != nil` |
-| 连接池未配置 | 默认无上限 | 明确设置 MaxOpenConns / MaxIdleConns |
+| 使用物理外键 | `gorm:"foreignKey:UserID"` 未加 `constraint:false` | 禁止 DB 级 FK，改用应用层校验 + `constraint:false` |
 
 ---
 
-## 9. 分库分表（Sharding）
+## 10. 缓存集成（Cache-Aside）
+
+> 详细示例见 `references/caching.md`，以下为核心模式。
+
+```go
+func (r *UserRepo) GetUser(ctx context.Context, id uint) (*User, error) {
+    key := fmt.Sprintf("user:%d", id)
+
+    // 1. 读 Redis
+    if val, err := r.rdb.Get(ctx, key).Bytes(); err == nil {
+        var u User
+        json.Unmarshal(val, &u)
+        return &u, nil
+    }
+
+    // 2. 查 DB（singleflight 防击穿）
+    res, err, _ := r.group.Do(key, func() (any, error) {
+        var u User
+        if err := r.db.WithContext(ctx).First(&u, id).Error; err != nil {
+            if errors.Is(err, gorm.ErrRecordNotFound) {
+                r.rdb.Set(ctx, key, "null", time.Minute) // 防穿透：缓存空值
+                return nil, ErrNotFound
+            }
+            return nil, err
+        }
+        data, _ := json.Marshal(u)
+        // TTL 加随机抖动，防雪崩
+        ttl := 30*time.Minute + time.Duration(rand.Int63n(int64(6*time.Minute)))
+        r.rdb.Set(ctx, key, data, ttl)
+        return &u, nil
+    })
+    if err != nil { return nil, err }
+    return res.(*User), nil
+}
+
+// 写操作：更新 DB → 删缓存（不更新缓存，避免并发不一致）
+func (r *UserRepo) UpdateUser(ctx context.Context, u *User) error {
+    if err := r.db.WithContext(ctx).Save(u).Error; err != nil { return err }
+    r.rdb.Del(ctx, fmt.Sprintf("user:%d", u.ID))
+    return nil
+}
+```
+
+> 布隆过滤器防穿透、延迟双删、列表缓存版本号方案详见 `references/caching.md`
+
+---
+
+## 11. 分库分表（Sharding）
 
 > 详细配置见 `references/sharding.md`，以下为快速索引。
 
@@ -361,11 +528,11 @@ db.Where("status = ?", "pending").Find(&orders)
 
 ---
 
-## 10. 监控与可观测性
+## 12. 监控与可观测性
 
 > 详细配置见 `references/observability.md`，以下为快速索引。
 
-### 10.1 Prometheus 指标
+### 12.1 Prometheus 指标
 
 ```go
 import "github.com/go-gorm/prometheus"
@@ -380,7 +547,7 @@ db.Use(prometheus.New(prometheus.Config{
 // 自动暴露: gorm_dbstats_max_open_connections, idle_connections, in_use 等
 ```
 
-### 10.2 慢查询回调
+### 12.2 慢查询回调
 
 ```go
 db.Callback().Query().After("gorm:query").Register("slowlog", func(db *gorm.DB) {
@@ -397,7 +564,7 @@ newLogger := logger.New(writer, logger.Config{
 })
 ```
 
-### 10.3 OpenTelemetry 链路追踪
+### 12.3 OpenTelemetry 链路追踪
 
 ```go
 import "github.com/uptrace/opentelemetry-go-extra/otelgorm"
@@ -415,7 +582,7 @@ db.WithContext(ctx).Find(&users) // ctx 需携带 trace context
 
 ---
 
-## 11. 进阶参考
+## 13. 进阶参考
 
 详细专题见 `references/` 目录（按需加载，不要全量读入）：
 
@@ -429,3 +596,6 @@ db.WithContext(ctx).Find(&users) // ctx 需携带 trace context
 | `references/migration.md` | golang-migrate 规范、大表在线 DDL | 用户问数据库迁移、AutoMigrate 的生产使用 |
 | `references/sharding.md` | 分库分表配置、分片算法、双写迁移 | 用户问分库分表、水平拆分 |
 | `references/observability.md` | Prometheus、OpenTelemetry、慢查询告警 | 用户问监控、可观测性、链路追踪 |
+| `references/scopes.md` | 可复用 Scope、分页、多租户行级隔离 | 用户问 Scope 用法、多租户设计 |
+| `references/caching.md` | Cache-Aside、防击穿/雪崩/穿透、缓存一致性 | 用户问 GORM + Redis 缓存集成 |
+| `references/base-model-pattern.md` | 泛型 BaseModel 常见 Bug、游标分页、多租户强制隔离 | 用户问 BaseModel 设计、QueryBuilder、分页优化 |

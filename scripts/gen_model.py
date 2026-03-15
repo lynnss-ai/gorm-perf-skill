@@ -13,53 +13,48 @@ import argparse
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-# ── 类型映射表 ───────────────────────────────────────────────────────────────
-SQL_TO_GO = {
-    # 整数
-    "tinyint":   "int8",
-    "smallint":  "int16",
-    "mediumint": "int32",
-    "int":       "int32",
-    "integer":   "int32",
-    "bigint":    "int64",
-    # 无符号整数
-    "tinyint unsigned":   "uint8",
-    "smallint unsigned":  "uint16",
-    "mediumint unsigned": "uint32",
-    "int unsigned":       "uint32",
-    "bigint unsigned":    "uint64",
-    # 浮点
-    "float":   "float32",
-    "double":  "float64",
-    "decimal": "float64",
-    "numeric": "float64",
-    # 字符串
-    "char":       "string",
-    "varchar":    "string",
-    "tinytext":   "string",
-    "text":       "string",
-    "mediumtext": "string",
-    "longtext":   "string",
-    "enum":       "string",
-    "set":        "string",
-    # 时间
-    "date":      "time.Time",
-    "datetime":  "time.Time",
-    "timestamp": "time.Time",
-    "time":      "string",
-    "year":      "int16",
-    # 布尔
-    "bool":    "bool",
-    "boolean": "bool",
-    # 二进制
-    "blob":       "[]byte",
-    "mediumblob": "[]byte",
-    "longblob":   "[]byte",
-    "binary":     "[]byte",
-    "varbinary":  "[]byte",
-    # JSON
-    "json": "datatypes.JSON",
+# ── MySQL 类型映射表 ────────────────────────────────────────────────────────
+SQL_TO_GO_MYSQL = {
+    "tinyint":"int8","smallint":"int16","mediumint":"int32",
+    "int":"int32","integer":"int32","bigint":"int64",
+    "tinyint unsigned":"uint8","smallint unsigned":"uint16",
+    "mediumint unsigned":"uint32","int unsigned":"uint32","bigint unsigned":"uint64",
+    "float":"float32","double":"float64","decimal":"float64","numeric":"float64",
+    "char":"string","varchar":"string","tinytext":"string","text":"string",
+    "mediumtext":"string","longtext":"string","enum":"string","set":"string",
+    "date":"time.Time","datetime":"time.Time","timestamp":"time.Time",
+    "time":"string","year":"int16",
+    "bool":"bool","boolean":"bool",
+    "blob":"[]byte","mediumblob":"[]byte","longblob":"[]byte",
+    "binary":"[]byte","varbinary":"[]byte",
+    "json":"datatypes.JSON",
 }
+
+# ── PostgreSQL 类型映射表 ────────────────────────────────────────────────────
+SQL_TO_GO_PG = {
+    "smallint":"int16","integer":"int32","int":"int32",
+    "int2":"int16","int4":"int32","int8":"int64","bigint":"int64",
+    "smallserial":"int16","serial":"int32","bigserial":"int64",
+    "real":"float32","float4":"float32","double precision":"float64",
+    "float8":"float64","numeric":"float64","decimal":"float64",
+    "char":"string","character":"string","varchar":"string",
+    "character varying":"string","text":"string","citext":"string","name":"string",
+    "date":"time.Time","time":"string","timetz":"string",
+    "time with time zone":"string",
+    "timestamp":"time.Time","timestamptz":"time.Time",
+    "timestamp with time zone":"time.Time",
+    "timestamp without time zone":"time.Time","interval":"string",
+    "bool":"bool","boolean":"bool",
+    "bytea":"[]byte",
+    "uuid":"string",
+    "json":"datatypes.JSON","jsonb":"datatypes.JSON",
+    "integer[]":"pq.Int64Array","bigint[]":"pq.Int64Array",
+    "text[]":"pq.StringArray","varchar[]":"pq.StringArray",
+    "inet":"string","cidr":"string","macaddr":"string","point":"string","money":"float64",
+}
+
+# 运行时由 --dialect 参数切换，默认 MySQL
+SQL_TO_GO = SQL_TO_GO_MYSQL
 
 @dataclass
 class Column:
@@ -344,7 +339,17 @@ def main():
     parser.add_argument("file", nargs="?", default="-", help="SQL 文件路径，- 表示 stdin")
     parser.add_argument("--table", help="表名（配合 --fields 使用）")
     parser.add_argument("--fields", help="字段列表，格式: name:type,name:type")
+    parser.add_argument("--dialect", choices=["mysql", "pg"], default="mysql",
+                        help="SQL 方言: mysql（默认）或 pg（PostgreSQL）")
     args = parser.parse_args()
+
+    # 切换方言
+    global SQL_TO_GO
+    if args.dialect == "pg":
+        SQL_TO_GO = SQL_TO_GO_PG
+        print("# [gen_model] 使用 PostgreSQL 类型映射", file=sys.stderr)
+    else:
+        SQL_TO_GO = SQL_TO_GO_MYSQL
 
     if args.table and args.fields:
         table = parse_fields_arg(args.table, args.fields)

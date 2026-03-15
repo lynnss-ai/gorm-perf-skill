@@ -204,3 +204,63 @@ assert.Equal(t, "new_name", updated.Name)
 | 需要验证 SQL 精确性 / 错误路径 | sqlmock |
 | 需要验证 MySQL 特定行为（JSON、全文索引等） | Docker + testcontainers-go |
 | CI 环境集成测试 | 事务回滚模式 + 真实测试库 |
+
+---
+
+## 6. 软删除 + Unique 约束冲突（经典坑）
+
+**问题**：Model 含 `DeletedAt` 时，软删除记录的唯一字段仍占用约束，再次插入相同值会报 `Duplicate entry`。
+
+```go
+type User struct {
+    gorm.Model
+    Email string `gorm:"uniqueIndex"` // ← 坑在这里
+}
+
+db.Create(&User{Email: "a@test.com"}) // OK
+db.Delete(&User{}, 1)                 // 软删除，email 仍在表中
+db.Create(&User{Email: "a@test.com"}) // ❌ Duplicate entry!
+```
+
+**解决方案一：唯一索引包含 deleted_at（MySQL 推荐）**
+
+```go
+// 用 composite uniqueIndex 包含 deleted_at，NULL 不参与唯一性判断
+type User struct {
+    gorm.Model
+    Email     string         `gorm:"uniqueIndex:idx_email_del"`
+    DeletedAt gorm.DeletedAt `gorm:"index;uniqueIndex:idx_email_del"`
+}
+// 软删除后 deleted_at = timestamp，不与 NULL 冲突，可以再次插入相同 email
+```
+
+**解决方案二：使用 deleted_at = 0 代替 NULL（PostgreSQL 兼容）**
+
+```go
+import "gorm.io/plugin/soft_delete"
+
+type User struct {
+    ID        uint
+    Email     string                `gorm:"uniqueIndex:idx_email_del"`
+    DeletedAt soft_delete.DeletedAt `gorm:"softDelete:milli;uniqueIndex:idx_email_del"`
+    // deleted_at 用毫秒时间戳，0 表示未删除
+}
+```
+
+**测试中如何覆盖这个场景**：
+
+```go
+func TestSoftDeleteUniqueConflict(t *testing.T) {
+    db := setupTestDB(t) // SQLite 内存库
+
+    // 插入 → 软删除 → 再插入，期望成功
+    u1 := User{Email: "dup@test.com"}
+    require.NoError(t, db.Create(&u1).Error)
+    require.NoError(t, db.Delete(&u1).Error)
+
+    u2 := User{Email: "dup@test.com"}
+    err := db.Create(&u2).Error
+    // 如果没有正确配置复合唯一索引，这里会报错
+    assert.NoError(t, err, "软删除后应可重新插入相同 email")
+}
+```
