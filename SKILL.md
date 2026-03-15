@@ -1,5 +1,5 @@
 ---
-name: gorm-perf
+name: gorm-expert
 version: 1.4.0
 description: >
   GORM v2 使用与性能优化专项技能。涵盖：代码审查/调试、慢查询/N+1优化、

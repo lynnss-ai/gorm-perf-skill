@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to gorm-perf-skill are documented here.
+All notable changes to gorm-expert-skill are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---

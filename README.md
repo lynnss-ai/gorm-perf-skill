@@ -1,4 +1,4 @@
-# gorm-perf-skill
+# gorm-expert-skill
 
 > 适用于 Claude 的 GORM 使用与性能优化专项 Skill
 
@@ -25,7 +25,7 @@
 ## 目录结构
 
 ```
-gorm-perf/
+gorm-expert/
 ├── SKILL.md                      # 主技能文件（13 节，含快速参考代码）
 ├── scripts/
 │   ├── analyze_gorm.py           # GORM 代码静态分析（R1-R18，双循环架构）
