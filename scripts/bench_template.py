@@ -5,6 +5,9 @@ bench_template.py — 为 GORM 函数生成 Go benchmark + pprof 启动代码
   python3 bench_template.py --func "GetUserByID(db *gorm.DB, id uint) (*User, error)"
   python3 bench_template.py --func "CreateOrder" --package service --file order_service.go
   python3 bench_template.py --scenario bulk_insert --table orders --batch 500
+
+磁盘写入：默认输出到 stdout，仅在用户传 --output <file> 时写磁盘。
+外部依赖：无（纯标准库，不调用任何 API）。
 """
 
 import argparse

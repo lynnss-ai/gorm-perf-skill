@@ -1,6 +1,6 @@
 ---
 name: gorm-perf
-version: 1.3.0
+version: 1.3.1
 description: >
   GORM 使用与性能优化专项技能，覆盖以下场景：
   (1) GORM 代码审查、编写、调试；
@@ -26,26 +26,46 @@ description: >
   "怎么写 Scope"、"多租户怎么隔离"、"GORM 怎么加缓存"、"Session 条件累积"、"goroutine 里用 db"、
   "FOR UPDATE"、"RETURNING"、"Preload 和 Joins"、
   "自定义类型映射"、"字段加密"等场景。
+compatibility:
+  runtime:
+    - python >= 3.8
+  binaries:
+    - python3
+  no_credentials: true
+  disk_access:
+    read_only:
+      - analyze_gorm.py
+      - gen_model.py
+      - migration_gen.py
+      - pool_advisor.py
+      - query_explain.py
+      - scope_gen.py
+    write_on_explicit_flag:
+      - bench_template.py   # 需用户传 --output <file>，默认输出到 stdout
+      - init_project.py     # 需用户传 --output <dir>，支持 --dry-run 预览不写盘
 ---
 
 # GORM 使用与性能优化 Skill
 
 ## 脚本工具（优先用脚本，减少 token 消耗）
 
-> **使用规则**：用户提供代码/SQL/参数时，**先跑脚本**，只输出脚本结果 + 针对性说明，
-> 不要重复输出 SKILL.md 中的通用内容。
+> **使用规则**：用户提供代码/SQL/参数时，**先跑脚本**，只输出脚本结果 + 针对性说明。
+>
+> **权限说明**：所有脚本仅依赖 Python 3.8+，不调用任何外部 API 或凭证。
+> 🔍 只读脚本（读 stdin 或用户指定文件，输出到 stdout，不写磁盘）
+> 📝 写磁盘脚本（仅在用户明确传 `--output` 参数时写文件，建议先用 `--dry-run` 预览）
 
-| 场景 | 脚本 | 用法示例 |
-|------|------|---------|
-| 用户粘贴 Go 代码，问"有没有问题/如何优化" | `scripts/analyze_gorm.py` | `python3 scripts/analyze_gorm.py - <<< "代码"`（R1–R21，含 v2 专属检测） |
-| 用户提供 CREATE TABLE SQL，需要生成 struct | `scripts/gen_model.py` | `echo "CREATE TABLE..." \| python3 scripts/gen_model.py -` |
-| 用户问连接池怎么配置，提供了 QPS/实例数等参数 | `scripts/pool_advisor.py` | `python3 scripts/pool_advisor.py --qps 500 --avg-latency-ms 20 --app-instances 4` |
-| 用户提供 SQL，问性能/索引问题 | `scripts/query_explain.py` | `python3 scripts/query_explain.py "SELECT * FROM ..."` |
-| 用户修改了 struct，问如何生成迁移 SQL | `scripts/migration_gen.py` | `python3 scripts/migration_gen.py old.go new.go --table users` |
-| 用户需要 benchmark / pprof 代码 | `scripts/bench_template.py` | `python3 scripts/bench_template.py --func "Fn(db *gorm.DB, id uint)" 或 --scenario bulk_insert` |
-| **新项目初始化**：用户想引入 dbcore 基础包到项目 | `scripts/init_project.py` | `python3 scripts/init_project.py --output ./internal/dbcore` |
-| 用户粘贴 struct，问如何生成 Scope 函数 | `scripts/scope_gen.py` | `python3 scripts/scope_gen.py model.go --tenant --paginate` |
-| 用户使用 PostgreSQL，需要生成 struct | `scripts/gen_model.py` | `python3 scripts/gen_model.py schema.sql --dialect pg` |
+| 场景 | 脚本 | 权限 | 用法示例 |
+|------|------|:----:|---------|
+| 用户粘贴 Go 代码，问"有没有问题/如何优化" | `scripts/analyze_gorm.py` | 🔍 | `python3 scripts/analyze_gorm.py - <<< "代码"`（R1–R21，含 v2 专属检测） |
+| 用户提供 CREATE TABLE SQL，需要生成 struct | `scripts/gen_model.py` | 🔍 | `echo "CREATE TABLE..." \| python3 scripts/gen_model.py -` |
+| 用户问连接池配置，提供了 QPS/实例数等参数 | `scripts/pool_advisor.py` | 🔍 | `python3 scripts/pool_advisor.py --qps 500 --avg-latency-ms 20 --app-instances 4` |
+| 用户提供 SQL，问性能/索引问题 | `scripts/query_explain.py` | 🔍 | `python3 scripts/query_explain.py "SELECT * FROM ..."` |
+| 用户修改了 struct，问如何生成迁移 SQL | `scripts/migration_gen.py` | 🔍 | `python3 scripts/migration_gen.py old.go new.go --table users` |
+| 用户粘贴 struct，问如何生成 Scope 函数 | `scripts/scope_gen.py` | 🔍 | `python3 scripts/scope_gen.py model.go --tenant --paginate` |
+| 用户使用 PostgreSQL，需要生成 struct | `scripts/gen_model.py` | 🔍 | `python3 scripts/gen_model.py schema.sql --dialect pg` |
+| 用户需要 benchmark / pprof 代码 | `scripts/bench_template.py` | 📝 | 默认输出到 stdout；写文件需加 `--output bench_test.go` |
+| **新项目初始化**：用户想引入 dbcore 基础包到项目 | `scripts/init_project.py` | 📝 | 先 `--dry-run` 预览，再 `--output ./internal/dbcore` 写入 |
 
 ---
 

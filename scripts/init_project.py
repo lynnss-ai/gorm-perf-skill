@@ -7,6 +7,8 @@ init_project.py — 将 dbcore 基础包脚手架到目标项目中
   python3 scripts/init_project.py --output ./pkg/dbcore --package mydbcore
   python3 scripts/init_project.py --output ./common/dbcore --dry-run
 
+磁盘写入：仅在用户明确传 --output <dir> 时写文件；--dry-run 模式完全不写盘。
+外部依赖：无（纯标准库，不调用任何 API 或凭证）。
 功能:
   1. 将 assets/dbcore/ 下的三个核心文件复制到目标目录
      - base_model.go   泛型 BaseModel（含游标分页、ListAll 上限保护等修复）
