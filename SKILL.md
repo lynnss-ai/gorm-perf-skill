@@ -1,5 +1,6 @@
 ---
 name: gorm-perf
+version: 1.0.1
 description: >
   GORM 使用与性能优化专项技能，覆盖以下场景：
   (1) GORM 代码审查、编写、调试；
