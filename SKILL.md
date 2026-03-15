@@ -1,6 +1,6 @@
 ---
 name: gorm-perf
-version: 1.1.1
+version: 1.2.0
 description: >
   GORM 使用与性能优化专项技能，覆盖以下场景：
   (1) GORM 代码审查、编写、调试；
@@ -37,6 +37,7 @@ description: >
 | 用户提供 SQL，问性能/索引问题 | `scripts/query_explain.py` | `python3 scripts/query_explain.py "SELECT * FROM ..."` |
 | 用户修改了 struct，问如何生成迁移 SQL | `scripts/migration_gen.py` | `python3 scripts/migration_gen.py old.go new.go --table users` |
 | 用户需要 benchmark / pprof 代码 | `scripts/bench_template.py` | `python3 scripts/bench_template.py --func "Fn(db *gorm.DB, id uint)" 或 --scenario bulk_insert` |
+| **新项目初始化**：用户想引入 dbcore 基础包到项目 | `scripts/init_project.py` | `python3 scripts/init_project.py --output ./internal/dbcore` |
 | 用户粘贴 struct，问如何生成 Scope 函数 | `scripts/scope_gen.py` | `python3 scripts/scope_gen.py model.go --tenant --paginate` |
 | 用户使用 PostgreSQL，需要生成 struct | `scripts/gen_model.py` | `python3 scripts/gen_model.py schema.sql --dialect pg` |
 
@@ -48,6 +49,67 @@ description: >
 2. **最小数据传输** — 只 Select 需要的字段，只查需要的行
 3. **减少 Round-trip** — 批量操作、预加载 vs 懒加载权衡
 4. **连接复用** — 正确配置连接池，避免频繁开关连接
+
+---
+
+## 0. 项目初始化（脚手架）
+
+新项目引入 `dbcore` 基础包（`BaseModel` + `QueryBuilder` + `Transaction`）时，
+直接用脚本生成，无需手动复制：
+
+```bash
+# 生成到指定目录，默认 package 名 dbcore
+python3 scripts/init_project.py --output ./internal/dbcore
+
+# 自定义 package 名
+python3 scripts/init_project.py --output ./pkg/db --package mydb
+
+# 预览模式（不写入文件）
+python3 scripts/init_project.py --output ./internal/dbcore --dry-run
+
+# 强制覆盖已存在文件
+python3 scripts/init_project.py --output ./internal/dbcore --force
+```
+
+生成的三个文件：
+
+| 文件 | 说明 |
+|------|------|
+| `base_model.go` | 泛型 BaseModel，含 CRUD / 分页 / 游标分页，已修复 Find→Take、ListAll 上限、Page 去重 |
+| `query_builder.go` | 链式查询条件构建器，已修复 InStrings/InInts args 顺序 Bug，新增 OrGroup |
+| `transaction.go` | 事务管理器，支持嵌套事务（GORM SavePoint） |
+
+生成后需要在同包内实现两个辅助函数（根据项目 ID 策略自行实现）：
+
+```go
+// auto_id.go（需自行创建）
+package dbcore
+
+import "github.com/bwmarrin/snowflake"
+
+var node, _ = snowflake.NewNode(1)
+
+func autoFillID(v any) {
+    // 用反射检查并填充 ID 字段（string 类型，为空时生成雪花 ID）
+    // 具体实现见 references/base-model-pattern.md 附录
+}
+
+func autoFillIDBatch[T any](v []*T) {
+    for _, item := range v {
+        autoFillID(item)
+    }
+}
+```
+
+初始化 DB 时推荐配置（详见第 1 节）：
+
+```go
+db, _ := gorm.Open(mysql.Open(dsn), &gorm.Config{
+    SkipDefaultTransaction:                   true,  // 写性能 +30%
+    PrepareStmt:                              true,  // SQL 编译缓存
+    DisableForeignKeyConstraintWhenMigrating: true,  // 禁止物理外键
+})
+```
 
 ---
 

@@ -34,7 +34,8 @@ gorm-perf/
 │   ├── query_explain.py          # SQL 性能分析
 │   ├── migration_gen.py          # 迁移 SQL 生成
 │   ├── bench_template.py         # Benchmark 代码模板
-│   └── scope_gen.py              # Scope 函数自动生成（NEW v1.1.0）
+│   ├── scope_gen.py              # Scope 函数自动生成（NEW v1.1.0）
+│   └── init_project.py           # dbcore 脚手架生成（NEW v1.2.0）
 └── references/
     ├── hooks.md                  # GORM Hooks + 性能陷阱
     ├── raw-sql.md                # 原生 SQL 使用
@@ -47,6 +48,11 @@ gorm-perf/
     ├── scopes.md                 # Scopes 完整参考（NEW v1.1.0）
     └── caching.md                # 缓存集成完整参考（NEW v1.1.0）
     └── base-model-pattern.md    # 泛型 BaseModel 规范与 Bug 修复记录（NEW v1.1.1）
+assets/
+└── dbcore/
+    ├── base_model.go             # 修复版 BaseModel 源文件
+    ├── query_builder.go          # 修复版 QueryBuilder 源文件
+    └── transaction.go            # 事务管理器源文件
 ```
 
 ## analyze_gorm.py 检测规则（R1–R18）
@@ -78,6 +84,7 @@ gorm-perf/
 
 | 版本 | 说明 |
 |------|------|
+| v1.2.0 | 新增 init_project.py 脚手架脚本；新增 assets/dbcore/（base_model.go / query_builder.go / transaction.go 修复版源文件）；SKILL.md 新增第0节「项目初始化」 |
 | v1.1.1 | 新增 base-model-pattern.md（QueryBuilder args Bug 修复、软删除唯一索引、Find→Take、ListAll 限制、Page 去重、游标分页、多租户强制隔离、datatypes.JSON）；同步修复 query_builder.go / base_model.go / order.go |
 | v1.1.0 | 新增 Scopes/多租户章节、缓存集成章节；新增 scope_gen.py；gen_model.py 支持 PostgreSQL；pool_advisor.py 增加健康检查代码输出；增强 hooks.md / indexing.md；testing.md 补充软删除唯一约束坑；analyze_gorm.py 重构为双循环架构 |
 | v1.0.2 | 新增分库分表章节、监控可观测性章节；analyze_gorm.py 新增 R11–R18；新增 sharding.md、observability.md |
