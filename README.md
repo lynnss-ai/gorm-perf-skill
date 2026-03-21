@@ -1,4 +1,4 @@
-# gorm-expert-skill
+# gorm-expert
 
 > 适用于 Claude 的 GORM v2 使用与性能优化专项 Skill（v1.5.0）
 
@@ -54,7 +54,7 @@
 ## 目录结构
 
 ```
-gorm-expert-skill/
+gorm-expert/
 ├── SKILL.md                          # 主技能文件（14 节快速参考）
 ├── CHANGELOG.md                      # 版本变更记录
 ├── README.md
