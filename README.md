@@ -1,6 +1,6 @@
 # gorm-expert
 
-> 适用于 Claude 的 GORM v2 使用与性能优化专项 Skill（v1.5.0）
+> 适用于 Claude 的 GORM v2 使用与性能优化专项 Skill（v1.7.0）
 
 ## 功能覆盖
 
@@ -8,7 +8,7 @@
 
 | 场景 | 说明 |
 |------|------|
-| 代码审查 / 静态分析 | 26 条反模式检测规则（R1–R26），支持 `--format json` CI 集成 |
+| 代码审查 / 静态分析 | 30 条反模式检测规则（R1–R30），支持 `--format json` CI 集成 |
 | SQL 注入防护 | Where/Raw 字符串拼接检测（R13/R22）、QueryBuilder 字段名校验 |
 | Error 处理规范 | v2 `errors.Is(err, gorm.ErrRecordNotFound)` 规范、RowsAffected 检查 |
 
@@ -38,6 +38,8 @@
 | 分库分表（Sharding） | gorm.io/sharding 配置、分片算法、双写迁移 |
 | Scopes 与多租户 | 可复用查询条件、行级租户隔离、Scope 自动生成 |
 | 监控与可观测性 | Prometheus 指标、慢查询告警、OpenTelemetry 链路追踪 |
+| GORM Gen 代码生成 | 类型安全查询、自定义 DAO 方法、编译期字段检查 |
+| Context 超时管理 | 连接泄漏防护、事务超时策略、连接池健康检查 |
 | 物理外键禁用 | 强制逻辑外键规范、AutoMigrate 禁止 FK 约束 |
 
 ### 开发工具
@@ -55,7 +57,7 @@
 
 ```
 gorm-expert/
-├── SKILL.md                          # 主技能文件（14 节快速参考）
+├── SKILL.md                          # 主技能文件（15 节快速参考）
 ├── CHANGELOG.md                      # 版本变更记录
 ├── README.md
 │

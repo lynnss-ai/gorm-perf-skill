@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.7.0] - 2026-03-22
+
+### Added
+- SKILL.md 新增 §13.6 **Context 超时与连接泄漏**：WithContext 超时行为、事务超时策略、Rows 关闭、连接池健康检查
+- SKILL.md 新增 §14 **GORM Gen（类型安全代码生成）**：Gen 配置、自定义查询方法、类型安全 API 对比
+- `references/gen.md`：GORM Gen 完整参考文档（安装配置、数据库生成、自定义方法、动态条件、关联查询、事务、最佳实践）
+- `references/context-timeout.md`：Context 超时完整参考文档（连接泄漏排查、HTTP Handler 集成、后台任务、生产配置建议）
+- `analyze_gorm.py` 新增 3 条规则：
+  - R28: `WHERE_SPRINTF_INJECTION` / `WHERE_STRING_CONCAT`（Where 字符串拼接注入风险，建议 Gen 类型安全 API）
+  - R29: `BACKGROUND_CONTEXT`（context.Background()/TODO() 无超时控制告警）
+  - R30: `ROWS_NOT_CLOSED`（Rows() 未配对 defer Close() 导致连接泄漏）
+- `scripts/tests/` 新增 238 个单元测试，覆盖全部 8 个 Python 脚本
+
+### Changed
+- Frontmatter 新增 `version`、`compatibility` 字段
+- Frontmatter 新增英文触发词（Triggers），支持英文用户触发
+- SKILL.md 章节编号调整：原 §14 进阶参考 → §15 进阶参考
+- 进阶参考表新增 `gen.md`、`context-timeout.md` 条目
+- `analyze_gorm.py` 规则范围更新为 R1–R30（原 R1–R27）
+
+---
+
 ## [1.6.0] - 2026-03-15
 
 ### Added

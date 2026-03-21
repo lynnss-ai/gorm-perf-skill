@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-analyze_gorm.py — 静态分析 Go 代码中的 GORM 反模式（R1–R27）
+analyze_gorm.py — 静态分析 Go 代码中的 GORM 反模式（R1–R30）
 用法:
   python3 analyze_gorm.py <go_file>
   cat main.go | python3 analyze_gorm.py -
@@ -246,6 +246,38 @@ def check_per_line(lines: List[str]) -> List[Issue]:
             issues.append(Issue("ERROR", "V1_NOT_FOUND_API", i, s,
                 "gorm.IsRecordNotFoundError 是 GORM v1 API，v2 已移除。"
                 "请改用: errors.Is(err, gorm.ErrRecordNotFound)"))
+
+    # ── R28: 字符串拼接 Where 条件（建议 Gen 类型安全）──────────────────
+    for i, line in enumerate(lines, 1):
+        s = line.strip()
+        if re.search(r'\.Where\s*\(\s*fmt\.Sprintf', s):
+            issues.append(Issue("ERROR", "WHERE_SPRINTF_INJECTION", i, s,
+                "Where(fmt.Sprintf(...)) 存在 SQL 注入风险。"
+                "使用参数化: .Where(\"col = ?\", val)，或迁移到 GORM Gen 类型安全查询"))
+        elif re.search(r'\.Where\s*\(\s*"[^"]*"\s*\+', s) or \
+             re.search(r'\.Where\s*\([^)]*\+\s*"', s):
+            issues.append(Issue("WARN", "WHERE_STRING_CONCAT", i, s,
+                "Where 条件使用字符串拼接，易出错且有注入风险。"
+                "建议使用参数化查询或 GORM Gen 类型安全 API"))
+
+    # ── R29: 未使用 Context 超时（背景 context 滥用）──────────────────────
+    for i, line in enumerate(lines, 1):
+        s = line.strip()
+        if re.search(r'\.WithContext\s*\(\s*context\.(Background|TODO)\s*\(\s*\)\s*\)', s):
+            issues.append(Issue("WARN", "BACKGROUND_CONTEXT", i, s,
+                "使用 context.Background()/TODO() 会导致查询无超时控制。"
+                "在 HTTP handler / RPC 中应传递请求级 ctx；后台任务应自行设置 WithTimeout"))
+
+    # ── R30: Rows() 未配对 defer Close()──────────────────────────────────
+    for i, line in enumerate(lines, 1):
+        s = line.strip()
+        if re.search(r'\.Rows\s*\(\s*\)', s):
+            window = lines[i:min(i+3, len(lines))]
+            has_close = any("Close()" in wl for wl in window)
+            if not has_close:
+                issues.append(Issue("ERROR", "ROWS_NOT_CLOSED", i, s,
+                    "Rows() 返回的 *sql.Rows 必须 defer rows.Close()，"
+                    "否则连接不归还池，最终导致连接泄漏和池耗尽"))
 
     return issues
 

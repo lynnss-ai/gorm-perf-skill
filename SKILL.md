@@ -1,11 +1,19 @@
 ---
 name: gorm-expert
+version: 1.7.0
 description: >
   GORM v2 最佳实践与性能优化。适用于：代码审查、慢查询优化、N+1、连接池、
   事务管理、分库分表、Prometheus/OTel监控、Session安全、Clause/Upsert、
-  缓存集成、BaseModel脚手架、SQL→struct生成、多租户隔离。
+  缓存集成、BaseModel脚手架、SQL→struct生成、多租户隔离、GORM Gen 代码生成。
   触发词：GORM、数据库慢、加索引、写struct、分库分表、Preload、FOR UPDATE、
-  Session累积、goroutine db、缓存、多租户、迁移。
+  Session累积、goroutine db、缓存、多租户、迁移、Gen、类型安全查询。
+  Triggers: GORM, slow query, N+1, connection pool, transaction, sharding,
+  Prometheus, OpenTelemetry, session safety, Upsert, caching, BaseModel,
+  SQL to struct, multi-tenant, GORM Gen, type-safe query, code review,
+  database performance, context timeout, connection leak.
+compatibility:
+  - claude-code
+  - claude-desktop
 ---
 
 # GORM 使用与性能优化 Skill
@@ -452,9 +460,97 @@ errors.Is(err, gorm.ErrRecordNotFound) // ✅ v2 正确写法
 // 注意：Find 不触发 ErrRecordNotFound；First/Take/Last 触发
 ```
 
+### 13.6 Context 超时与连接泄漏
+
+```go
+// ✅ 始终传递带超时的 Context，防止慢查询阻塞和连接泄漏
+ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+defer cancel()
+db.WithContext(ctx).Find(&users)
+
+// ⚠️ Context 取消后，GORM 底层驱动会中断正在执行的 SQL
+// 但已获取的 *sql.Rows 不会自动关闭 — 必须 defer rows.Close()
+rows, err := db.WithContext(ctx).Model(&User{}).Rows()
+if err != nil { return err }
+defer rows.Close() // 必须！否则连接不归还池
+
+// ❌ 事务中 Context 超时 → 连接可能残留未提交事务
+// ✅ 事务超时应略大于最长单条 SQL，并在外层设置总超时
+txCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+defer cancel()
+db.WithContext(txCtx).Transaction(func(tx *gorm.DB) error {
+    // tx 自动继承 txCtx，超时后整个事务回滚
+    return tx.Create(&order).Error
+})
+
+// ✅ 健康检查：定期验证连接池
+sqlDB, _ := db.DB()
+if err := sqlDB.PingContext(ctx); err != nil {
+    log.Error("db connection unhealthy", "err", err)
+}
+```
+
+> **关键规则**：每个对外 API handler 都应设置 Context 超时；事务内不要用无超时的 `context.Background()`。
+
 ---
 
-## 14. 进阶参考
+## 14. GORM Gen（类型安全代码生成）
+
+```go
+// 安装：go install gorm.io/gen/tools/gentool@latest
+
+// gen.go — 代码生成配置
+g := gen.NewGenerator(gen.Config{
+    OutPath:      "./dal/query",       // 生成代码输出目录
+    ModelPkgPath: "./dal/model",       // 生成 Model 输出目录
+    Mode:         gen.WithDefaultQuery | gen.WithQueryInterface,
+})
+g.UseDB(db)
+
+// 方式 1：从已有数据库表生成（推荐已有项目）
+g.ApplyBasic(g.GenerateAllTable()...)
+
+// 方式 2：从已有 Model struct 生成（推荐新项目）
+g.ApplyBasic(model.User{}, model.Order{})
+
+// 自定义查询方法（接口注释 → 生成实现）
+type Querier interface {
+    // SELECT * FROM @@table WHERE name = @name AND age > @age
+    FindByNameAndAge(name string, age int) ([]*gen.T, error)
+
+    // SELECT * FROM @@table WHERE @@where
+    FilterWithCondition(where string) ([]*gen.T, error)
+
+    // UPDATE @@table SET status = @status WHERE id IN @ids
+    BatchUpdateStatus(ids []int64, status string) (gen.RowsAffected, error)
+}
+g.ApplyInterface(func(Querier) {}, model.User{})
+g.Execute()
+```
+
+**使用生成的类型安全 API**：
+
+```go
+u := query.User
+// ✅ 类型安全：编译期检查字段名和类型
+users, err := u.WithContext(ctx).Where(u.Age.Gt(18), u.Status.Eq("active")).Find()
+// ✅ 链式调用，自动补全
+order, err := query.Order.WithContext(ctx).
+    Where(query.Order.UserID.Eq(userID)).
+    Order(query.Order.CreatedAt.Desc()).
+    First()
+
+// ❌ 对比传统字符串写法 — 字段名拼错编译不报错
+db.Where("stauts = ?", "active").Find(&users) // "stauts" 拼写错误运行时才发现
+```
+
+> **何时用 Gen**：团队协作项目、字段频繁变更、需要编译期安全保障时推荐。
+> 小型项目或快速原型可继续用传统 GORM API。
+> 详见 `references/gen.md`
+
+---
+
+## 15. 进阶参考
 
 详细专题见 `references/` 目录（按需加载，不要全量读入）：
 
@@ -477,3 +573,5 @@ errors.Is(err, gorm.ErrRecordNotFound) // ✅ v2 正确写法
 | `caching.md` | Cache-Aside、防击穿/雪崩/穿透 | Redis 缓存 |
 | `soft-delete.md` | 软删除、唯一约束兼容、归档清理 | 软删除 |
 | `id-generation.md` | Snowflake/Leaf-Segment/UUID、时钟回拨 | 分布式 ID |
+| `gen.md` | GORM Gen 代码生成、类型安全查询、自定义方法 | Gen、类型安全、DAO 生成 |
+| `context-timeout.md` | Context 超时、连接泄漏、事务超时策略 | Context、超时、连接池健康 |
