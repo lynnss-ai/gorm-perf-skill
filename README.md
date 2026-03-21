@@ -62,7 +62,7 @@ gorm-expert/
 ├── README.md
 │
 ├── scripts/                          # 8 个 Python 工具脚本
-│   ├── analyze_gorm.py               # 🔍 静态分析（R1–R26，支持 --format json）
+│   ├── analyze_gorm.py               # 🔍 静态分析（R1–R30，支持 --format json）
 │   ├── gen_model.py                  # 🔍 SQL → GORM struct（MySQL / PostgreSQL）
 │   ├── pool_advisor.py               # 🔍 连接池参数计算 + 健康检查代码
 │   ├── query_explain.py              # 🔍 SQL 性能分析（11 条规则）
@@ -71,7 +71,7 @@ gorm-expert/
 │   ├── scope_gen.py                  # 🔍 Scope 函数自动生成
 │   └── init_project.py               # 📝 dbcore 脚手架生成（--dry-run 预览）
 │
-├── references/                       # 17 篇专题参考文档
+├── references/                       # 20 篇专题参考文档
 │   ├── README.md                     # 索引（按主题分组 + 快速选择指南）
 │   │
 │   │  # 基础设施
@@ -84,12 +84,14 @@ gorm-expert/
 │   ├── concurrency.md               # 乐观锁、悲观锁、CAS 原子更新
 │   ├── sharding.md                   # 分库分表、分片算法、双写迁移
 │   ├── caching.md                    # Redis Cache-Aside、防击穿/雪崩/穿透
+│   ├── context-timeout.md            # Context 超时、连接泄漏、事务超时策略
 │   │
 │   │  # GORM v2 核心机制
 │   ├── session.md                    # Session 配置、goroutine 安全、条件累积
 │   ├── clause.md                     # Clause 系统（Upsert/FOR UPDATE/RETURNING）
 │   ├── association.md                # Preload/Joins 选型、级联控制
 │   ├── serializer.md                 # Serializer + 自定义数据类型（枚举/Money/加密）
+│   ├── gen.md                        # GORM Gen 代码生成、类型安全查询、自定义方法
 │   │
 │   │  # 模式与扩展
 │   ├── scopes.md                     # 可复用 Scope、分页、多租户隔离
@@ -100,6 +102,16 @@ gorm-expert/
 │   │  # 数据安全与 ID 生成
 │   ├── soft-delete.md                # 软删除完整指南（唯一约束、时间戳模式、归档）
 │   └── id-generation.md              # 分布式 ID 策略（Snowflake/Leaf-Segment/UUID）
+│
+├── scripts/tests/                    # 238 个单元测试
+│   ├── test_analyze_gorm.py          # 静态分析规则测试（R1–R30）
+│   ├── test_gen_model.py             # SQL→struct 生成测试
+│   ├── test_pool_advisor.py          # 连接池计算测试
+│   ├── test_query_explain.py         # SQL 性能分析测试
+│   ├── test_migration_gen.py         # 迁移 SQL 生成测试
+│   ├── test_scope_gen.py             # Scope 生成测试
+│   ├── test_bench_template.py        # Benchmark 模板测试
+│   └── test_init_project.py          # 脚手架生成测试
 │
 └── assets/dbcore/                    # 生产就绪的 Go 基础包
     ├── base_model.go                 # 泛型 BaseModel（17 个方法 + 游标分页）
@@ -222,7 +234,7 @@ python3 scripts/init_project.py --output ./internal/dbcore --force
 
 ---
 
-## analyze_gorm.py 检测规则一览（R1–R26）
+## analyze_gorm.py 检测规则一览（R1–R30）
 
 架构：逐行规则（per-line loop）+ 全文件规则（full-file check），去重按行号排序。
 
@@ -252,6 +264,11 @@ python3 scripts/init_project.py --output ./internal/dbcore --force
 | R23: UNCHECKED_ROWS_AFFECTED | INFO | Update/Delete 后未检查 RowsAffected |
 | R24: SAVE_FULL_UPDATE | INFO | `db.Save()` 全量更新所有字段 |
 | R25: AUTO_MIGRATE_IN_BUSINESS | WARN | AutoMigrate 出现在非 init/main/setup 函数中 |
+| R26: LARGE_IN_CLAUSE | WARN | IN 子句超过 1000 个元素，建议分批或临时表 |
+| R27: REFERENCES_NO_CONSTRAINT | ERROR | `references:` tag 未加 `constraint:false` |
+| R28: WHERE_SPRINTF_INJECTION / WHERE_STRING_CONCAT | ERROR/WARN | Where 中 fmt.Sprintf 或字符串拼接，SQL 注入风险 |
+| R29: BACKGROUND_CONTEXT | WARN | `WithContext(context.Background())` 无超时控制 |
+| R30: ROWS_NOT_CLOSED | ERROR | `Rows()` 未配对 `defer rows.Close()`，连接泄漏 |
 
 ### 全文件检测（Full-File Rules）
 
@@ -319,7 +336,9 @@ err := tx.ExecTx(ctx, func(ctx context.Context) error {
 
 | 版本 | 主要变更 |
 |------|---------|
-| **v1.5.0** | auto_id.go 重写为可插拔 ID 生成器（Snowflake/Leaf-Segment/UUID）；新增 `references/id-generation.md` + `soft-delete.md`；修复 gen_model.py/QueryBuilder OrGroup/pool_advisor.py Bug；新增 R22–R25 检测规则 + `--format json`；SQL 注入防护 |
+| **v1.7.0** | GORM Gen 类型安全代码生成（§14 + gen.md）；Context 超时与连接泄漏（§13.6 + context-timeout.md）；R28–R30 新规则；238 个单元测试；Frontmatter 英文触发词 + version/compatibility |
+| v1.6.0 | Config 全局配置系统；多租户自动注入；R27 references tag 检测 |
+| v1.5.0 | auto_id.go 可插拔 ID 生成器（Snowflake/Leaf-Segment/UUID）；id-generation.md + soft-delete.md；R22–R25 + `--format json`；SQL 注入防护 |
 | v1.4.0 | SKILL.md 精简至 ~500 行；新增 auto_id.go 雪花算法；references/README.md 索引；安全 frontmatter |
 | v1.3.0 | GORM v2 核心机制全覆盖：session/clause/association/serializer/raw-sql；R19–R21 规则 |
 | v1.2.1 | 新增 example_order_model.go 完整示例 |
